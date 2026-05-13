@@ -38,13 +38,12 @@
       <HintPath>$(DalamudLibPath)Dalamud.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <PackageReference Include="Dalamud" Version="10.0.0" Condition="'$(GITHUB_ACTIONS)' == 'true'" />
+    <PackageReference Include="Dalamud" Version="14.0.3" Condition="'$(GITHUB_ACTIONS)' == 'true'" />
   </ItemGroup>
 
   <!-- ── NuGet Dependencies ─────────────────────────────────────────────────────────────── -->
   <ItemGroup>
     <PackageReference Include="ImGui.NET" Version="1.87.3" />
-    <PackageReference Include="ImGuiScene" Version="1.1.5" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 
