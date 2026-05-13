@@ -1,6 +1,7 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
 
   <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <AssemblyName>PenumbraSort</AssemblyName>
     <RootNamespace>PenumbraSort</RootNamespace>
     <Nullable>enable</Nullable>
