@@ -29,10 +29,10 @@ jobs:
           Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/net10/latest.zip" -OutFile latest.zip
           Expand-Archive -Force latest.zip "$env:AppData\XIVLauncher\addon\Hooks\dev"
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '10.0.101'
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore dependencies
         shell: pwsh
