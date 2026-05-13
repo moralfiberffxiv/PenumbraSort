@@ -40,7 +40,7 @@ jobs:
     - name: Copy DLL to artifact
       if: startsWith(github.ref, 'refs/tags/')
       run: |
-        Copy-Item -Path "bin\x64\Release\net8.0-windows\PenumbraSort.dll" -Destination "artifact\PenumbraSort.dll"
+        Copy-Item -Path "bin\x64\Release\net10.0-windows\PenumbraSort.dll" -Destination "artifact\PenumbraSort.dll"
       shell: pwsh
 
     - name: Create Release
