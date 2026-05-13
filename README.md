@@ -1,7 +1,7 @@
 # ✦ PenumbraSort
 
-[![Build](https://github.com/YourGitHubName/PenumbraSort/actions/workflows/build.yml/badge.svg)](https://github.com/YourGitHubName/PenumbraSort/actions/workflows/build.yml)
-[![Latest Release](https://img.shields.io/github/v/release/YourGitHubName/PenumbraSort?label=release&color=blueviolet)](https://github.com/YourGitHubName/PenumbraSort/releases/latest)
+[![Build](https://github.com/moralfiberffxiv/PenumbraSort/actions/workflows/build.yml/badge.svg)](https://github.com/moralfiberffxiv/PenumbraSort/actions/workflows/build.yml)
+[![Latest Release](https://img.shields.io/github/v/release/moralfiberffxiv/PenumbraSort?label=release&color=blueviolet)](https://github.com/moralfiberffxiv/PenumbraSort/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Dalamud API](https://img.shields.io/badge/Dalamud%20API-10-informational)](https://github.com/goatcorp/Dalamud)
 
@@ -14,7 +14,7 @@
 1. Open XIVLauncher → `/xlplugins` → ⚙ Settings → **Custom Plugin Repositories**
 2. Paste this URL and click **Save**:
    ```
-   https://raw.githubusercontent.com/YourGitHubName/PenumbraSort/main/repo.json
+   https://raw.githubusercontent.com/moralfiberffxiv/PenumbraSort/main/repo.json
    ```
 3. Search for **PenumbraSort** → **Install**
 4. Type `/penumbrasort` in-game
@@ -47,6 +47,63 @@ Updates are delivered automatically through XIVLauncher whenever a new release i
 Tags are auto-detected from mod names on first load — a mod called *"Autumn Harvest Skirt"* gets Bottoms + Autumn + Casual automatically. Just review and adjust.
 
 **Apply Sort** — click **📋 Apply Sort** in the menu bar to write the sorted order to Penumbra (via IPC if connected, or as `.penumbrasort.json` to your mod directory).
+
+---
+
+## For Developers
+
+Want to contribute or build from source? See:
+- **[SETUP.md](SETUP.md)** - Complete development environment setup guide
+- **[DEVELOPMENT.md](DEVELOPMENT.md)** - Architecture, build instructions, and troubleshooting
+
+### Quick Build
+
+```powershell
+# Windows
+./build.bat
+
+# macOS/Linux
+./build.sh
+```
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for more details.
+
+---
+
+## Troubleshooting
+
+### Plugin doesn't appear in `/xlplugins`
+- Ensure Dalamud is installed (launch FFXIV through XIVLauncher once)
+- Check that you've added the custom repository correctly
+- Try `/xlreload` if already in-game
+
+### "Penumbra Offline"
+- Verify Penumbra plugin is installed and enabled
+- Some features work offline (mods from disk scan)
+- Tags still save locally
+
+### Mod names aren't auto-detected
+- Auto-detection runs on first load only
+- Edit tags manually with 🏷 **Tag** button
+- Tags are saved automatically when you click **Done**
+
+For more troubleshooting, see [DEVELOPMENT.md](DEVELOPMENT.md#troubleshooting).
+
+---
+
+## License
+
+MIT License - See [LICENSE](LICENSE) file for details.
+
+---
+
+## Acknowledgments
+
+- **Dalamud** team for the plugin framework
+- **Penumbra** developers for IPC support
+- **XIVLauncher** team for the launcher
+
+Made with 💜 for the FFXIV community
 
 ---
 

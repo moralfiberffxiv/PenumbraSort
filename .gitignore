@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# IDE
+.idea/
+.vs/
+*.sln.iml
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# User-specific
+.user

@@ -296,7 +296,7 @@ public class PluginUI : IDisposable
             {
                 _tagManager.SaveTags(mod);
                 _editingMod = null;
-                SetStatus($"Tags saved for "{mod.Name}"");
+                SetStatus($"Tags saved for {mod.Name}");
                 RebuildGroups();
             }
             ImGui.PopStyleColor();
