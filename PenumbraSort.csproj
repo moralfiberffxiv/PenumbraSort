@@ -1,45 +1,23 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
 
   <PropertyGroup>
-    <TargetFramework>net10.0-windows</TargetFramework>
     <AssemblyName>PenumbraSort</AssemblyName>
     <RootNamespace>PenumbraSort</RootNamespace>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Optimize>true</Optimize>
-    <Platforms>x64</Platforms>
-    <PlatformTarget>x64</PlatformTarget>
-    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
 
-    <!-- Explicit output path so the workflow can find the DLL reliably -->
-    <OutputPath>bin\x64\$(Configuration)\$(TargetFramework)\</OutputPath>
-    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
-
-    <!-- Dalamud library path — works both locally (AppData) and in CI (Actions runner) -->
-    <DalamudLibPath Condition="'$(GITHUB_ACTIONS)' == 'true'">$(APPDATA)\XIVLauncher\addon\Hooks\dev\</DalamudLibPath>
-    <DalamudLibPath Condition="'$(GITHUB_ACTIONS)' != 'true'">$(AppData)\XIVLauncher\addon\Hooks\dev\</DalamudLibPath>
+    <!-- Plugin manifest fields (replaces PenumbraSort.json) -->
+    <Name>PenumbraSort</Name>
+    <Author>moralfiberffxiv</Author>
+    <Description>Sort and tag your Penumbra mods by clothing type, season, and occasion. Keep your glamour collection perfectly organized.</Description>
+    <Punchline>Organize your Penumbra mods by outfit type, season, and occasion.</Punchline>
+    <RepoUrl>https://github.com/moralfiberffxiv/PenumbraSort</RepoUrl>
+    <Tags>penumbra;mods;glamour;organization;fashion;sorting</Tags>
+    <DalamudApiLevel>15</DalamudApiLevel>
+    <LoadRequiredState>0</LoadRequiredState>
+    <LoadSync>false</LoadSync>
+    <CanUnloadAsync>true</CanUnloadAsync>
   </PropertyGroup>
-
-  <!-- ── Dalamud References ──────────────────────────────────────────────── -->
-  <ItemGroup>
-    <Reference Include="Dalamud">
-      <HintPath>$(DalamudLibPath)Dalamud.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="ImGui.NET">
-      <HintPath>$(DalamudLibPath)ImGui.NET.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="ImGuiScene">
-      <HintPath>$(DalamudLibPath)ImGuiScene.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="Newtonsoft.Json">
-      <HintPath>$(DalamudLibPath)Newtonsoft.Json.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-  </ItemGroup>
 
 </Project>

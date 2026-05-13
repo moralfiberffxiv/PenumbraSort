@@ -23,20 +23,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download Dalamud
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/latest.zip" -OutFile latest.zip
-          Expand-Archive -Force latest.zip "$env:AppData\XIVLauncher\addon\Hooks\dev"
-
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
-
-      - name: Restore dependencies
-        shell: pwsh
-        run: dotnet restore
 
       - name: Set version
         id: version
@@ -51,21 +41,26 @@ jobs:
             echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Restore dependencies
+        shell: pwsh
+        run: dotnet restore
+
       - name: Build
         shell: pwsh
         run: dotnet build --configuration Release /p:AssemblyVersion=${{ steps.version.outputs.VERSION }} /p:FileVersion=${{ steps.version.outputs.VERSION }}
 
-      - name: Package plugin
+      # Dalamud.NET.Sdk + DalamudPackager auto-generates a latest.zip in the output folder
+      - name: Locate and rename output zip
         shell: pwsh
         run: |
-          $outDir = "bin\x64\Release"
-          if (!(Test-Path "$outDir\PenumbraSort.dll")) {
-            Write-Error "DLL not found at $outDir\PenumbraSort.dll — searching for it..."
-            Get-ChildItem -Recurse -Filter "PenumbraSort.dll" | Select-Object FullName
+          $zip = Get-ChildItem -Recurse -Filter "latest.zip" | Select-Object -First 1
+          if (!$zip) {
+            Write-Error "latest.zip not found — listing all output files for debug:"
+            Get-ChildItem -Recurse -Include "*.dll","*.zip","*.json" | Select-Object FullName
             exit 1
           }
-          Compress-Archive -Path "$outDir\PenumbraSort.dll","$outDir\PenumbraSort.json" -DestinationPath "PenumbraSort.zip" -Force
-          Write-Host "Packaged PenumbraSort.zip successfully."
+          Write-Host "Found zip at: $($zip.FullName)"
+          Copy-Item $zip.FullName "PenumbraSort.zip" -Force
 
       - name: Update repo.json
         if: steps.version.outputs.IS_RELEASE == 'true'

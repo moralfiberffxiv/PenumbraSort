@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Interface.Windowing;
-using ImGuiNET;
+using Dalamud.Bindings.ImGui;
 
 namespace PenumbraSort;
 
@@ -296,7 +296,7 @@ public class PluginUI : IDisposable
             {
                 _tagManager.SaveTags(mod);
                 _editingMod = null;
-                SetStatus($"Tags saved for {mod.Name}");
+                SetStatus($"Tags saved for "{mod.Name}"");
                 RebuildGroups();
             }
             ImGui.PopStyleColor();
