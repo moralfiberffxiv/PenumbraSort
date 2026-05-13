@@ -1,0 +1,15 @@
+{
+  "Author": "YourName",
+  "Name": "PenumbraSort",
+  "InternalName": "PenumbraSort",
+  "AssemblyVersion": "1.0.0.0",
+  "Description": "Sort and tag your Penumbra mods by clothing type, season, and occasion. Keep your glamour collection perfectly organized.",
+  "ApplicableVersion": "any",
+  "RepoUrl": "https://github.com/yourname/PenumbraSort",
+  "Tags": ["penumbra", "mods", "glamour", "organization", "fashion"],
+  "DalamudApiLevel": 10,
+  "LoadRequiredState": 0,
+  "LoadSync": false,
+  "CanUnloadAsync": true,
+  "SupportsProfiles": true
+}
