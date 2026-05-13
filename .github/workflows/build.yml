@@ -45,9 +45,39 @@ jobs:
         shell: pwsh
         run: dotnet restore
 
+      - name: Setup Dalamud SDK
+        shell: pwsh
+        run: |
+          $dalamudPath = "$env:APPDATA\XIVLauncher\addon\Hooks\dev"
+          $latestZipPath = "$env:TEMP\dalamud-latest.zip"
+          
+          # Create directory
+          New-Item -ItemType Directory -Path $dalamudPath -Force | Out-Null
+          
+          # Try to download latest Dalamud SDK
+          try {
+            Write-Host "Downloading Dalamud SDK..."
+            $dlFile = "https://github.com/goatcorp/Dalamud/releases/latest/download/latest.zip"
+            Invoke-WebRequest -Uri $dlFile -OutFile $latestZipPath -ErrorAction SilentlyContinue
+            
+            if (Test-Path $latestZipPath) {
+              Expand-Archive -Path $latestZipPath -DestinationPath $dalamudPath -Force
+              Write-Host "Dalamud SDK extracted successfully"
+            } else {
+              Write-Host "Could not download Dalamud SDK, will attempt build anyway"
+            }
+          } catch {
+            Write-Host "Warning: Failed to download Dalamud SDK: $_"
+          }
+          
+          # Set environment variable
+          [System.Environment]::SetEnvironmentVariable("DALAMUD_HOME", $dalamudPath, "Process")
+
       - name: Build
         shell: pwsh
-        run: dotnet build --configuration Release /p:AssemblyVersion=${{ steps.version.outputs.VERSION }} /p:FileVersion=${{ steps.version.outputs.VERSION }}
+        env:
+          DALAMUD_HOME: ${{ env.APPDATA }}\XIVLauncher\addon\Hooks\dev
+        run: dotnet build --configuration Release /p:AssemblyVersion=${{ steps.version.outputs.VERSION }} /p:FileVersion=${{ steps.version.outputs.VERSION }} --no-restore
 
       # Dalamud.NET.Sdk + DalamudPackager auto-generates a latest.zip in the output folder
       - name: Locate and rename output zip
