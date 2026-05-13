@@ -9,7 +9,7 @@
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/moralfiberffxiv/PenumbraSort",
     "Tags": ["penumbra", "mods", "glamour", "organization", "fashion", "sorting"],
-    "DalamudApiLevel": 10,
+    "DalamudApiLevel": 14,
     "LoadRequiredState": 0,
     "LoadSync": false,
     "CanUnloadAsync": true,
