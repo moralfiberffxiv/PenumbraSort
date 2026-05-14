@@ -1,15 +1,7 @@
 {
-  "Author": "moralfiberffxiv",
   "Name": "PenumbraSort",
-  "InternalName": "PenumbraSort",
-  "AssemblyVersion": "1.0.0.0",
-  "Description": "Sort and tag your Penumbra mods by clothing type, season, and occasion. Keep your glamour collection perfectly organized.",
-  "ApplicableVersion": "any",
-  "RepoUrl": "https://github.com/moralfiberffxiv/PenumbraSort",
-  "Tags": ["penumbra", "mods", "glamour", "organization", "fashion"],
-  "DalamudApiLevel": 15,
-  "LoadRequiredState": 0,
-  "LoadSync": false,
-  "CanUnloadAsync": true,
-  "SupportsProfiles": true
+  "Author": "moralfiberffxiv",
+  "Punchline": "Organize your Penumbra mods by outfit type, season, and occasion.",
+  "Description": "Sort and tag your Penumbra mods by clothing type, season, and occasion. Keep your glamour collection perfectly organized. Use /penumbrasort to open.",
+  "RepoUrl": "https://github.com/moralfiberffxiv/PenumbraSort"
 }

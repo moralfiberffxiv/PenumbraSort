@@ -1,25 +1,10 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
 
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <AssemblyName>PenumbraSort</AssemblyName>
-    <RootNamespace>PenumbraSort</RootNamespace>
-    <Nullable>enable</Nullable>
+    <Version>1.0.0.0</Version>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <RestoreSources>https://api.nuget.org/v3/index.json</RestoreSources>
-
-    <!-- Plugin manifest fields (replaces PenumbraSort.json) -->
-    <Name>PenumbraSort</Name>
-    <Author>moralfiberffxiv</Author>
-    <Description>Sort and tag your Penumbra mods by clothing type, season, and occasion. Keep your glamour collection perfectly organized.</Description>
-    <Punchline>Organize your Penumbra mods by outfit type, season, and occasion.</Punchline>
-    <RepoUrl>https://github.com/moralfiberffxiv/PenumbraSort</RepoUrl>
-    <Tags>penumbra;mods;glamour;organization;fashion;sorting</Tags>
-    <DalamudApiLevel>15</DalamudApiLevel>
-    <LoadRequiredState>0</LoadRequiredState>
-    <LoadSync>false</LoadSync>
-    <CanUnloadAsync>true</CanUnloadAsync>
+    <Nullable>enable</Nullable>
   </PropertyGroup>
 
 </Project>
