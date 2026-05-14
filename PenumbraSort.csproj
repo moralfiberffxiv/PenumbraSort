@@ -7,4 +7,16 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <!-- Only include the plugin DLL and its generated manifest in the zip.
+       Excluding everything else prevents Dalamud's installer from choking
+       on bundled Dalamud DLLs or other build output files. -->
+  <Target Name="PackagePlugin" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <DalamudPackager
+      ProjectDir="$(ProjectDir)"
+      OutputPath="$(OutputPath)"
+      AssemblyName="$(AssemblyName)"
+      MakeZip="true"
+      Include="$(AssemblyName).dll;$(AssemblyName).json" />
+  </Target>
+
 </Project>

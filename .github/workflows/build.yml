@@ -53,23 +53,31 @@ jobs:
         shell: pwsh
         run: dotnet build --no-restore --configuration Release /p:Version=${{ steps.version.outputs.VERSION }}
 
-      # DalamudPackager (included in Dalamud.NET.Sdk) outputs latest.zip to a
-      # folder named after the assembly inside the build output directory.
+      # DalamudPackager outputs latest.zip inside a folder named after the assembly.
+      # We exclude the .nuget cache to avoid finding unrelated zips.
       - name: Locate and stage output zip
         shell: pwsh
         run: |
           $zip = Get-ChildItem -Recurse -Filter "latest.zip" `
-                   | Where-Object { $_.FullName -notlike "*\.nuget\*" } `
+                   | Where-Object { $_.FullName -notlike "*\.nuget\*" -and $_.FullName -notlike "*\dalamud\*" } `
                    | Select-Object -First 1
           if (!$zip) {
-            Write-Error "latest.zip not found. Listing all build outputs for debug:"
+            Write-Error "latest.zip not found. Listing all build outputs:"
             Get-ChildItem -Recurse -Include "*.dll","*.zip","*.json" `
               | Where-Object { $_.FullName -notlike "*\.nuget\*" } `
               | Select-Object FullName
             exit 1
           }
           Write-Host "Found zip: $($zip.FullName)"
+
+          # List contents so we can verify only DLL + JSON are inside
+          Write-Host "Zip contents:"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $entries = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName).Entries
+          $entries | ForEach-Object { Write-Host "  $($_.FullName)" }
+
           Copy-Item $zip.FullName "PenumbraSort.zip" -Force
+          Write-Host "Staged as PenumbraSort.zip"
 
       - name: Update repo.json
         if: steps.version.outputs.IS_RELEASE == 'true'
