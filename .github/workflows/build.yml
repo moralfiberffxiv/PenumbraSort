@@ -25,6 +25,13 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # Downloads Dalamud, extracts it, and sets DALAMUD_HOME automatically.
+      # Dalamud.NET.Sdk reads DALAMUD_HOME to find the DLL references it needs.
+      - name: Setup Dalamud
+        uses: Blooym/setup-dalamud@v1
+        with:
+          branch: release
+
       - name: Set version
         id: version
         shell: bash
@@ -46,22 +53,23 @@ jobs:
         shell: pwsh
         run: dotnet build --no-restore --configuration Release /p:Version=${{ steps.version.outputs.VERSION }}
 
-      # DalamudPackager outputs to: bin/Release/PenumbraSort/latest.zip
-      # We confirm it exists before proceeding to catch packaging failures early.
-      - name: Locate output zip
+      # DalamudPackager (included in Dalamud.NET.Sdk) outputs latest.zip to a
+      # folder named after the assembly inside the build output directory.
+      - name: Locate and stage output zip
         shell: pwsh
         run: |
-          # DalamudPackager puts latest.zip inside a folder named after the assembly
-          $zip = "bin\Release\PenumbraSort\latest.zip"
-          if (!(Test-Path $zip)) {
-            Write-Host "Expected path not found. Searching for any latest.zip..."
-            Get-ChildItem -Recurse -Filter "latest.zip" | Select-Object FullName
-            Write-Error "latest.zip not found at expected location: $zip"
+          $zip = Get-ChildItem -Recurse -Filter "latest.zip" `
+                   | Where-Object { $_.FullName -notlike "*\.nuget\*" } `
+                   | Select-Object -First 1
+          if (!$zip) {
+            Write-Error "latest.zip not found. Listing all build outputs for debug:"
+            Get-ChildItem -Recurse -Include "*.dll","*.zip","*.json" `
+              | Where-Object { $_.FullName -notlike "*\.nuget\*" } `
+              | Select-Object FullName
             exit 1
           }
-          Write-Host "Found zip at: $zip"
-          Copy-Item $zip "PenumbraSort.zip" -Force
-          Write-Host "Copied to PenumbraSort.zip successfully."
+          Write-Host "Found zip: $($zip.FullName)"
+          Copy-Item $zip.FullName "PenumbraSort.zip" -Force
 
       - name: Update repo.json
         if: steps.version.outputs.IS_RELEASE == 'true'
@@ -69,14 +77,13 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.VERSION }}"
           $content = Get-Content repo.json -Raw | ConvertFrom-Json
+          $dl = "https://github.com/${{ github.repository }}/releases/download/v${version}/PenumbraSort.zip"
           $content[0].AssemblyVersion        = $version
           $content[0].TestingAssemblyVersion = $version
-          $dl = "https://github.com/${{ github.repository }}/releases/download/v${version}/PenumbraSort.zip"
           $content[0].DownloadLinkInstall    = $dl
           $content[0].DownloadLinkUpdate     = $dl
           $content[0].DownloadLinkTesting    = $dl
           $content | ConvertTo-Json -Depth 10 | Set-Content repo.json
-          Write-Host "repo.json updated to version $version"
 
       - name: Commit updated repo.json
         if: steps.version.outputs.IS_RELEASE == 'true'
