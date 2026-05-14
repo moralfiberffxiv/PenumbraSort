@@ -8,6 +8,7 @@
     "Description": "Sort and tag your Penumbra mods by clothing type, season, and occasion. Keep your glamour collection perfectly organized.",
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/moralfiberffxiv/PenumbraSort",
+    "IconUrl": "https://github.com/moralfiberffxiv/PenumbraSort/raw/main/assets/icon.png",
     "Tags": [
       "penumbra",
       "mods",
