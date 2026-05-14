@@ -21,7 +21,6 @@ public class PenumbraIpc : IDisposable
     private ICallGateSubscriber<string>?               _getModDirectory;
     private ICallGateSubscriber<IList<(string, string)>>? _getMods;
     private ICallGateSubscriber<string, string, int, int, object>? _setModPosition;
-    private ICallGateSubscriber<string, string, (int, int)>? _getModMeta;
 
     public bool IsAvailable { get; private set; }
     public string? ModDirectory { get; private set; }

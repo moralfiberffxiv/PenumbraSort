@@ -74,9 +74,12 @@ public class PluginUI : IDisposable
         ImGui.SetNextWindowSize(new Vector2(780, 620), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowSizeConstraints(new Vector2(600, 400), new Vector2(1200, 900));
 
-        if (ImGui.Begin("✦ PenumbraSort — Mod Organizer", ref Visible,
+        // ImGui.Begin requires a ref bool — properties can't be passed by ref directly
+        bool windowOpen = Visible;
+        if (ImGui.Begin("✦ PenumbraSort — Mod Organizer", ref windowOpen,
             ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.MenuBar))
         {
+            Visible = windowOpen;
             DrawMenuBar();
             DrawTopBar();
 
