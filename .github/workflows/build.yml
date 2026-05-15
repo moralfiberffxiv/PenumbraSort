@@ -53,55 +53,42 @@ jobs:
         shell: pwsh
         run: dotnet build --no-restore --configuration Release /p:Version=${{ steps.version.outputs.VERSION }}
 
-      # DalamudPackager outputs latest.zip inside a folder named after the assembly.
-      # We exclude the .nuget cache to avoid finding unrelated zips.
-      - name: Locate and stage output zip
+      # Manually zip only the DLL and manifest — nothing else.
+      # Dalamud's installer requires exactly these two files at the zip root.
+      - name: Package plugin
         shell: pwsh
         run: |
-          $zip = Get-ChildItem -Recurse -Filter "latest.zip" `
-                   | Where-Object { $_.FullName -notlike "*\.nuget\*" -and $_.FullName -notlike "*\dalamud\*" } `
+          # Find the built DLL (exclude nuget cache)
+          $dll = Get-ChildItem -Recurse -Filter "PenumbraSort.dll" `
+                   | Where-Object { $_.FullName -notlike "*\.nuget\*" -and $_.FullName -notlike "*\ref\*" } `
                    | Select-Object -First 1
-          if (!$zip) {
-            Write-Error "latest.zip not found. Listing all build outputs:"
-            Get-ChildItem -Recurse -Include "*.dll","*.zip","*.json" `
-              | Where-Object { $_.FullName -notlike "*\.nuget\*" } `
-              | Select-Object FullName
+
+          if (!$dll) {
+            Write-Error "PenumbraSort.dll not found. Build output:"
+            Get-ChildItem -Recurse -Include "*.dll" | Where-Object { $_.FullName -notlike "*\.nuget\*" } | Select-Object FullName
             exit 1
           }
-          Write-Host "Found zip: $($zip.FullName)"
 
-          # List contents so we can verify only DLL + JSON are inside
+          $outDir = $dll.DirectoryName
+          $jsonFile = Join-Path $outDir "PenumbraSort.json"
+
+          Write-Host "DLL:  $($dll.FullName)"
+          Write-Host "JSON: $jsonFile"
+
+          if (!(Test-Path $jsonFile)) {
+            Write-Error "PenumbraSort.json not found next to DLL. Files in output dir:"
+            Get-ChildItem $outDir | Select-Object Name
+            exit 1
+          }
+
+          # Zip only these two files, flat at the root (no subfolders)
+          Compress-Archive -Path $dll.FullName, $jsonFile -DestinationPath "PenumbraSort.zip" -Force
+
+          # Verify contents
           Write-Host "Zip contents:"
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $entries = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName).Entries
-          $entries | ForEach-Object { Write-Host "  $($_.FullName)" }
-
-          Copy-Item $zip.FullName "PenumbraSort.zip" -Force
-          Write-Host "Staged as PenumbraSort.zip"
-
-      - name: Update repo.json
-        if: steps.version.outputs.IS_RELEASE == 'true'
-        shell: pwsh
-        run: |
-          $version = "${{ steps.version.outputs.VERSION }}"
-          $content = Get-Content repo.json -Raw | ConvertFrom-Json
-          $dl = "https://github.com/${{ github.repository }}/releases/download/v${version}/PenumbraSort.zip"
-          $content[0].AssemblyVersion        = $version
-          $content[0].TestingAssemblyVersion = $version
-          $content[0].DownloadLinkInstall    = $dl
-          $content[0].DownloadLinkUpdate     = $dl
-          $content[0].DownloadLinkTesting    = $dl
-          $content | ConvertTo-Json -Depth 10 | Set-Content repo.json
-
-      - name: Commit updated repo.json
-        if: steps.version.outputs.IS_RELEASE == 'true'
-        shell: bash
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add repo.json
-          git diff --staged --quiet || git commit -m "chore: bump repo.json to v${{ steps.version.outputs.VERSION }}"
-          git push origin HEAD:main
+          [System.IO.Compression.ZipFile]::OpenRead("PenumbraSort.zip").Entries `
+            | ForEach-Object { Write-Host "  $($_.FullName)" }
 
       - name: Create GitHub Release
         if: steps.version.outputs.IS_RELEASE == 'true'
