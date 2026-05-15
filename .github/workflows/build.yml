@@ -38,6 +38,10 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
+            # Pad to four parts (e.g. 1.0.9 -> 1.0.9.0) so it matches AssemblyVersion
+            IFS='.' read -ra PARTS <<< "$VERSION"
+            while [ ${#PARTS[@]} -lt 4 ]; do PARTS+=("0"); done
+            VERSION="${PARTS[0]}.${PARTS[1]}.${PARTS[2]}.${PARTS[3]}"
             echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
             echo "IS_RELEASE=true"  >> $GITHUB_OUTPUT
           else
