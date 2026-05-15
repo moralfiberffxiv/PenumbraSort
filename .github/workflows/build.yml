@@ -53,42 +53,28 @@ jobs:
         shell: pwsh
         run: dotnet build --no-restore --configuration Release /p:Version=${{ steps.version.outputs.VERSION }}
 
-      # Manually zip only the DLL and manifest — nothing else.
-      # Dalamud's installer requires exactly these two files at the zip root.
+      # DalamudPackager writes latest.zip to: bin/Release/{AssemblyName}/latest.zip
+      # The zip contains only DLL + JSON (deps.json excluded via csproj Exclude param)
       - name: Package plugin
         shell: pwsh
         run: |
-          # Find the built DLL (exclude nuget cache)
-          $dll = Get-ChildItem -Recurse -Filter "PenumbraSort.dll" `
-                   | Where-Object { $_.FullName -notlike "*\.nuget\*" -and $_.FullName -notlike "*\ref\*" } `
-                   | Select-Object -First 1
-
-          if (!$dll) {
-            Write-Error "PenumbraSort.dll not found. Build output:"
-            Get-ChildItem -Recurse -Include "*.dll" | Where-Object { $_.FullName -notlike "*\.nuget\*" } | Select-Object FullName
+          $zip = "bin\Release\PenumbraSort\latest.zip"
+          if (!(Test-Path $zip)) {
+            Write-Error "Expected zip not found at: $zip"
+            Write-Host "Searching for any latest.zip..."
+            Get-ChildItem -Recurse -Filter "latest.zip" | Where-Object { $_.FullName -notlike "*\.nuget\*" } | Select-Object FullName
+            Write-Host "All build output files:"
+            Get-ChildItem -Recurse -Include "*.dll","*.zip","*.json" | Where-Object { $_.FullName -notlike "*\.nuget\*" } | Select-Object FullName
             exit 1
           }
 
-          $outDir = $dll.DirectoryName
-          $jsonFile = Join-Path $outDir "PenumbraSort.json"
-
-          Write-Host "DLL:  $($dll.FullName)"
-          Write-Host "JSON: $jsonFile"
-
-          if (!(Test-Path $jsonFile)) {
-            Write-Error "PenumbraSort.json not found next to DLL. Files in output dir:"
-            Get-ChildItem $outDir | Select-Object Name
-            exit 1
-          }
-
-          # Zip only these two files, flat at the root (no subfolders)
-          Compress-Archive -Path $dll.FullName, $jsonFile -DestinationPath "PenumbraSort.zip" -Force
-
-          # Verify contents
+          # Print contents so we can verify it's only DLL + JSON
           Write-Host "Zip contents:"
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          [System.IO.Compression.ZipFile]::OpenRead("PenumbraSort.zip").Entries `
-            | ForEach-Object { Write-Host "  $($_.FullName)" }
+          [System.IO.Compression.ZipFile]::OpenRead($zip).Entries | ForEach-Object { Write-Host "  $($_.FullName)" }
+
+          Copy-Item $zip "PenumbraSort.zip" -Force
+          Write-Host "Done — PenumbraSort.zip ready."
 
       - name: Create GitHub Release
         if: steps.version.outputs.IS_RELEASE == 'true'
