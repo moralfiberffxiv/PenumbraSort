@@ -53,28 +53,55 @@ jobs:
         shell: pwsh
         run: dotnet build --no-restore --configuration Release /p:Version=${{ steps.version.outputs.VERSION }}
 
-      # DalamudPackager writes latest.zip to: bin/Release/{AssemblyName}/latest.zip
-      # The zip contains only DLL + JSON (deps.json excluded via csproj Exclude param)
+      # Manual zip — cd into the output dir first so Compress-Archive stores
+      # filenames only (no path prefix). This guarantees DLL+JSON sit at the
+      # zip root, which is what Dalamud's installer requires.
       - name: Package plugin
         shell: pwsh
         run: |
-          $zip = "bin\Release\PenumbraSort\latest.zip"
-          if (!(Test-Path $zip)) {
-            Write-Error "Expected zip not found at: $zip"
-            Write-Host "Searching for any latest.zip..."
-            Get-ChildItem -Recurse -Filter "latest.zip" | Where-Object { $_.FullName -notlike "*\.nuget\*" } | Select-Object FullName
-            Write-Host "All build output files:"
-            Get-ChildItem -Recurse -Include "*.dll","*.zip","*.json" | Where-Object { $_.FullName -notlike "*\.nuget\*" } | Select-Object FullName
+          # DalamudPackager (no MakeZip) still generates PenumbraSort.json next to the DLL.
+          # Find the output directory by locating the DLL.
+          $dll = Get-ChildItem -Recurse -Filter "PenumbraSort.dll" `
+                 | Where-Object { $_.FullName -notlike "*\.nuget\*" -and $_.FullName -notlike "*\ref\*" } `
+                 | Select-Object -First 1
+
+          if (!$dll) {
+            Write-Error "PenumbraSort.dll not found. All DLLs found:"
+            Get-ChildItem -Recurse -Filter "*.dll" | Where-Object { $_.FullName -notlike "*\.nuget\*" } | Select-Object FullName
             exit 1
           }
 
-          # Print contents so we can verify it's only DLL + JSON
-          Write-Host "Zip contents:"
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          [System.IO.Compression.ZipFile]::OpenRead($zip).Entries | ForEach-Object { Write-Host "  $($_.FullName)" }
+          $outDir = $dll.DirectoryName
+          $jsonPath = Join-Path $outDir "PenumbraSort.json"
 
-          Copy-Item $zip "PenumbraSort.zip" -Force
-          Write-Host "Done — PenumbraSort.zip ready."
+          Write-Host "Output dir : $outDir"
+          Write-Host "DLL        : $($dll.FullName)"
+          Write-Host "JSON       : $jsonPath"
+
+          if (!(Test-Path $jsonPath)) {
+            Write-Error "PenumbraSort.json missing. Files in output dir:"
+            Get-ChildItem $outDir | Select-Object Name
+            exit 1
+          }
+
+          # CRITICAL: Push-Location so Compress-Archive uses relative paths,
+          # producing a flat zip (no directory prefix on entries).
+          Push-Location $outDir
+          Compress-Archive -Path "PenumbraSort.dll", "PenumbraSort.json" `
+                           -DestinationPath "$env:GITHUB_WORKSPACE\PenumbraSort.zip" `
+                           -Force
+          Pop-Location
+
+          # Verify — must show exactly 2 entries, both at root with no path prefix
+          Write-Host "Verifying zip contents (must be exactly DLL + JSON at root):"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $entries = [System.IO.Compression.ZipFile]::OpenRead("$env:GITHUB_WORKSPACE\PenumbraSort.zip").Entries
+          $entries | ForEach-Object { Write-Host "  [$($_.FullName)]" }
+          if ($entries.Count -ne 2) {
+            Write-Error "Expected exactly 2 files in zip, got $($entries.Count). Aborting."
+            exit 1
+          }
+          Write-Host "Package OK — $($entries.Count) files confirmed."
 
       - name: Create GitHub Release
         if: steps.version.outputs.IS_RELEASE == 'true'

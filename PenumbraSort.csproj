@@ -5,8 +5,6 @@
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
-
-    <!-- Plugin manifest — generated into PenumbraSort.json by DalamudPackager -->
     <Name>PenumbraSort</Name>
     <Author>moralfiberffxiv</Author>
     <Punchline>Organize your Penumbra mods by outfit type, season, and occasion.</Punchline>
@@ -14,15 +12,5 @@
     <RepoUrl>https://github.com/moralfiberffxiv/PenumbraSort</RepoUrl>
     <Tags>penumbra;mods;glamour;organization;fashion;sorting</Tags>
   </PropertyGroup>
-
-  <!-- Let DalamudPackager create latest.zip but exclude deps.json and runtimeconfig -->
-  <Target Name="PackagePlugin" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
-    <DalamudPackager
-      ProjectDir="$(ProjectDir)"
-      OutputPath="$(OutputPath)"
-      AssemblyName="$(AssemblyName)"
-      MakeZip="true"
-      Exclude="$(AssemblyName).deps.json;$(AssemblyName).runtimeconfig.json" />
-  </Target>
 
 </Project>
