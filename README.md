@@ -50,25 +50,7 @@ Tags are auto-detected from mod names on first load — a mod called *"Autumn Ha
 
 ---
 
-## For Developers
 
-Want to contribute or build from source? See:
-- **[SETUP.md](SETUP.md)** - Complete development environment setup guide
-- **[DEVELOPMENT.md](DEVELOPMENT.md)** - Architecture, build instructions, and troubleshooting
-
-### Quick Build
-
-```powershell
-# Windows
-./build.bat
-
-# macOS/Linux
-./build.sh
-```
-
-See [DEVELOPMENT.md](DEVELOPMENT.md) for more details.
-
----
 
 ## Troubleshooting
 
@@ -87,8 +69,6 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for more details.
 - Edit tags manually with 🏷 **Tag** button
 - Tags are saved automatically when you click **Done**
 
-For more troubleshooting, see [DEVELOPMENT.md](DEVELOPMENT.md#troubleshooting).
-
 ---
 
 ## License
@@ -105,14 +85,6 @@ MIT License - See [LICENSE](LICENSE) file for details.
 
 Made with 💜 for the FFXIV community
 
----
-
-## Releasing a New Version
-
-```bash
-git tag v1.1.0
-git push origin v1.1.0
-```
 
 GitHub Actions builds the plugin, creates a release with the zip attached, and updates `repo.json` automatically. Users receive the update through XIVLauncher.
 
