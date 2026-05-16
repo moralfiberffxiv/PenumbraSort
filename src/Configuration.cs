@@ -8,39 +8,35 @@ namespace PenumbraSort;
 [Serializable]
 public class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
 
-    // Penumbra IPC path (auto-detected or manually set)
     public string PenumbraModDirectory { get; set; } = string.Empty;
 
-    // User-defined tag assignments: ModName -> List of tags
+    // ModDirectoryName -> confirmed tags
     public Dictionary<string, List<string>> ModTags { get; set; } = new();
 
-    // User-defined custom tags beyond the defaults
-    public List<string> CustomClothingTypes { get; set; } = new();
-    public List<string> CustomSeasons { get; set; } = new();
-    public List<string> CustomOccasions { get; set; } = new();
+    // Snapshots for revert (keyed by timestamp string)
+    public List<PenumbraSnapshot> Snapshots { get; set; } = new();
+    public int MaxSnapshots { get; set; } = 10;
 
     // Sort preferences
-    public SortMode LastSortMode { get; set; } = SortMode.ClothingType;
-    public bool SortAscending { get; set; } = true;
-    public bool AutoApplyOnSort { get; set; } = false;
-
-    // UI state
-    public bool ShowTagEditor { get; set; } = true;
-    public bool ShowPreview { get; set; } = true;
+    public SortMode LastSortMode  { get; set; } = SortMode.ClothingType;
+    public bool     SortAscending { get; set; } = true;
 
     [NonSerialized]
     private IDalamudPluginInterface? _pluginInterface;
 
     public void Initialize(IDalamudPluginInterface pluginInterface)
-    {
-        _pluginInterface = pluginInterface;
-    }
+        => _pluginInterface = pluginInterface;
 
-    public void Save()
+    public void Save() => _pluginInterface?.SavePluginConfig(this);
+
+    public void AddSnapshot(PenumbraSnapshot snap)
     {
-        _pluginInterface?.SavePluginConfig(this);
+        Snapshots.Insert(0, snap);
+        while (Snapshots.Count > MaxSnapshots)
+            Snapshots.RemoveAt(Snapshots.Count - 1);
+        Save();
     }
 }
 
@@ -50,5 +46,4 @@ public enum SortMode
     Season,
     Occasion,
     Alphabetical,
-    Custom
 }

@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
-using Dalamud.Interface.Windowing;
+using System.Threading;
+using System.Threading.Tasks;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Windowing;
 
 namespace PenumbraSort;
 
@@ -12,99 +14,98 @@ public class PluginUI : IDisposable
     private readonly Configuration _config;
     private readonly PenumbraIpc    _ipc;
     private readonly TagManager     _tagManager;
-    private readonly WindowSystem   _windowSystem;
+    private readonly AiTagger       _aiTagger;
+    private readonly LiveWatcher    _liveWatcher;
 
-    // Mod state
-    private List<ModEntry>   _allMods   = new();
-    private List<SortGroup>  _groups    = new();
-    private ModEntry?        _editingMod = null;
-    private string           _searchFilter = string.Empty;
-    private bool             _isDirty = false;
+    private List<ModEntry>  _allMods = new();
+    private List<SortGroup> _groups  = new();
+    private ModEntry?       _editingMod;
+    private string          _searchFilter  = string.Empty;
+    private int             _sortModeIdx   = 0;
+    private string          _newCustomTag  = string.Empty;
+    private string          _statusMessage = string.Empty;
+    private float           _statusTimer   = 0f;
+    private bool            _showSettings  = false;
+    private bool            _showRevert    = false;
+    private bool            _showAiReview  = false;
+    private string          _collectionName = string.Empty;
+    private CancellationTokenSource? _aiCts;
+    private bool _pendingLiveRefresh = false;
 
-    // UI state
-    private int _selectedSortMode = 0;
-    private string _newCustomTag  = string.Empty;
-    private string _statusMessage = string.Empty;
-    private float  _statusTimer   = 0f;
-    private bool   _showSettings  = false;
-    private int    _collapsedGroups_flags = 0; // bitmask
+    // Colours
+    private static readonly Vector4 Gold      = new(0.90f, 0.75f, 0.35f, 1.0f);
+    private static readonly Vector4 Accent    = new(0.45f, 0.75f, 0.90f, 1.0f);
+    private static readonly Vector4 Panel     = new(0.15f, 0.15f, 0.20f, 1.0f);
+    private static readonly Vector4 Green     = new(0.35f, 0.80f, 0.45f, 1.0f);
+    private static readonly Vector4 Red       = new(0.90f, 0.35f, 0.35f, 1.0f);
+    private static readonly Vector4 Subtext   = new(0.65f, 0.62f, 0.70f, 1.0f);
+    private static readonly Vector4 Warning   = new(0.95f, 0.65f, 0.20f, 1.0f);
 
-    // Colors matching FF14 aesthetic
-    private static readonly Vector4 ColorGold     = new(0.90f, 0.75f, 0.35f, 1.0f);
-    private static readonly Vector4 ColorAccent   = new(0.45f, 0.75f, 0.90f, 1.0f);
-    private static readonly Vector4 ColorDark     = new(0.10f, 0.10f, 0.14f, 0.97f);
-    private static readonly Vector4 ColorPanel    = new(0.15f, 0.15f, 0.20f, 1.0f);
-    private static readonly Vector4 ColorBorder   = new(0.35f, 0.30f, 0.45f, 0.80f);
-    private static readonly Vector4 ColorGreen    = new(0.35f, 0.80f, 0.45f, 1.0f);
-    private static readonly Vector4 ColorRed      = new(0.90f, 0.35f, 0.35f, 1.0f);
-    private static readonly Vector4 ColorSubtext  = new(0.65f, 0.62f, 0.70f, 1.0f);
-
-    private static readonly string[] SortModeLabels = { "Clothing Type", "Season", "Occasion", "A–Z" };
+    private static readonly string[] SortLabels = { "Clothing Type", "Season", "Occasion", "A–Z" };
 
     public bool Visible { get; set; }
 
-    public PluginUI(Configuration config)
+    public PluginUI(Configuration config, LiveWatcher liveWatcher)
     {
-        _config     = config;
-        _ipc        = new PenumbraIpc(Plugin.PluginInterface);
-        _tagManager = new TagManager(config);
+        _config      = config;
+        _ipc         = new PenumbraIpc(Plugin.PluginInterface);
+        _tagManager  = new TagManager(config);
+        _aiTagger    = new AiTagger();
+        _liveWatcher = liveWatcher;
 
-        _windowSystem = new WindowSystem("PenumbraSort");
+        // Subscribe to live mod detection — fires from background thread,
+        // so we set a flag and handle it on the next Draw() call.
+        _liveWatcher.NewModDetected += OnNewModDetected;
+
         Refresh();
     }
 
     public void Dispose()
     {
+        _liveWatcher.NewModDetected -= OnNewModDetected;
+        _aiCts?.Cancel();
+        _aiTagger.Dispose();
         _ipc.Dispose();
     }
 
-    // ── Frame ─────────────────────────────────────────────────────────────────
+    // ── Main Draw ─────────────────────────────────────────────────────────────
 
     public void Draw()
     {
         if (!Visible) return;
+        if (_statusTimer > 0f) _statusTimer -= ImGui.GetIO().DeltaTime;
 
-        // Tick status message
-        if (_statusTimer > 0f)
-            _statusTimer -= ImGui.GetIO().DeltaTime;
+        // Handle live-detected new mod (flag set from background thread)
+        if (_pendingLiveRefresh)
+        {
+            _pendingLiveRefresh = false;
+            Refresh();
+            SetStatus("New mod detected! Tags auto-suggested.");
+        }
 
-        // Push dark FF14-style theme
         PushStyle();
+        ImGui.SetNextWindowSize(new Vector2(860, 640), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSizeConstraints(new Vector2(640, 440), new Vector2(1400, 1000));
 
-        ImGui.SetNextWindowSize(new Vector2(780, 620), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSizeConstraints(new Vector2(600, 400), new Vector2(1200, 900));
-
-        // ImGui.Begin requires a ref bool — properties can't be passed by ref directly
         bool windowOpen = Visible;
         if (ImGui.Begin("✦ PenumbraSort — Mod Organizer", ref windowOpen,
             ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.MenuBar))
         {
             Visible = windowOpen;
             DrawMenuBar();
-            DrawTopBar();
-
+            DrawToolbar();
             ImGui.Separator();
 
-            // Two-pane layout: left = sorted list, right = tag editor
-            var avail = ImGui.GetContentRegionAvail();
-            float leftW = _editingMod != null ? avail.X * 0.55f : avail.X;
+            // Settings overlay
+            if (_showSettings) { DrawSettings(); ImGui.End(); PopStyle(); return; }
+            // Revert overlay
+            if (_showRevert)   { DrawRevertPanel(); ImGui.End(); PopStyle(); return; }
+            // AI review overlay
+            if (_showAiReview) { DrawAiReviewPanel(); ImGui.End(); PopStyle(); return; }
 
-            ImGui.BeginChild("##ModList", new Vector2(leftW - (_editingMod != null ? 6 : 0), avail.Y - 32), false);
-            DrawModList();
-            ImGui.EndChild();
-
-            if (_editingMod != null)
-            {
-                ImGui.SameLine();
-                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 2);
-                ImGui.BeginChild("##TagEditor", new Vector2(avail.X - leftW - 2, avail.Y - 32), true,
-                    ImGuiWindowFlags.AlwaysAutoResize);
-                DrawTagEditor();
-                ImGui.EndChild();
-            }
-
-            DrawBottomBar();
+            DrawMainLayout();
         }
+        else { Visible = false; }
 
         ImGui.End();
         PopStyle();
@@ -119,106 +120,145 @@ public class PluginUI : IDisposable
         if (ImGui.MenuItem("⚙ Settings"))  _showSettings = !_showSettings;
         if (ImGui.MenuItem("🔄 Refresh"))   Refresh();
         if (ImGui.MenuItem("💾 Save All"))  { _tagManager.SaveAllTags(_allMods); SetStatus("All tags saved!"); }
-        if (ImGui.MenuItem("📋 Apply Sort"))
+
+        // AI tagging
+        var aiPending = _aiTagger.PendingSuggestions.Count;
+        if (_aiTagger.IsBusy)
         {
-            var applied = _ipc.ApplySortedOrder(_groups);
-            SetStatus(applied ? "Sort order applied to Penumbra!" : "Saved sort file (IPC unavailable).");
+            ImGui.PushStyleColor(ImGuiCol.Text, Warning);
+            ImGui.Text($"  🤖 AI tagging {_aiTagger.TaggedSoFar}/{_aiTagger.TotalToTag}...");
+            ImGui.PopStyleColor();
+            ImGui.SameLine();
+            if (ImGui.SmallButton("✕ Cancel")) { _aiCts?.Cancel(); }
+        }
+        else
+        {
+            if (ImGui.MenuItem("🔍 Auto-Tag Untagged")) RunAiTagging();
+            if (aiPending > 0)
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, Warning);
+                if (ImGui.MenuItem($"⚡ Review {aiPending} AI Suggestions"))
+                    _showAiReview = true;
+                ImGui.PopStyleColor();
+            }
         }
 
-        // IPC status indicator
-        ImGui.SetCursorPosX(ImGui.GetWindowWidth() - 190);
-        ImGui.PushStyleColor(ImGuiCol.Text, _ipc.IsAvailable ? ColorGreen : ColorRed);
+        // Apply & Revert
+        ImGui.Separator();
+        ImGui.PushStyleColor(ImGuiCol.Text, Green);
+        if (ImGui.MenuItem("📁 Apply Folders to Penumbra")) ApplyFolders();
+        ImGui.PopStyleColor();
+        ImGui.PushStyleColor(ImGuiCol.Text, Warning);
+        if (ImGui.MenuItem("⏪ Revert")) _showRevert = true;
+        ImGui.PopStyleColor();
+
+        // IPC indicator
+        ImGui.SetCursorPosX(ImGui.GetWindowWidth() - 195);
+        ImGui.PushStyleColor(ImGuiCol.Text, _ipc.IsAvailable ? Green : Red);
         ImGui.Text(_ipc.IsAvailable ? "● Penumbra Connected" : "● Penumbra Offline");
         ImGui.PopStyleColor();
 
         ImGui.EndMenuBar();
     }
 
-    // ── Top Bar ───────────────────────────────────────────────────────────────
+    // ── Toolbar ───────────────────────────────────────────────────────────────
 
-    private void DrawTopBar()
+    private void DrawToolbar()
     {
-        // Search
-        ImGui.SetNextItemWidth(220);
-        ImGui.PushStyleColor(ImGuiCol.FrameBg, ColorPanel);
+        ImGui.SetNextItemWidth(200);
+        ImGui.PushStyleColor(ImGuiCol.FrameBg, Panel);
         if (ImGui.InputTextWithHint("##Search", "🔍 Search mods…", ref _searchFilter, 128))
             RebuildGroups();
         ImGui.PopStyleColor();
 
         ImGui.SameLine();
-
-        // Sort mode tabs
-        ImGui.Text("Sort by:");
-        ImGui.SameLine();
-
-        for (int i = 0; i < SortModeLabels.Length; i++)
+        ImGui.Text("Sort:");
+        for (int i = 0; i < SortLabels.Length; i++)
         {
-            if (i > 0) ImGui.SameLine();
-            bool selected = _selectedSortMode == i;
-            if (selected) ImGui.PushStyleColor(ImGuiCol.Button, ColorAccent with { W = 0.25f });
-            if (ImGui.SmallButton($" {SortModeLabels[i]} "))
+            ImGui.SameLine();
+            bool sel = _sortModeIdx == i;
+            if (sel) ImGui.PushStyleColor(ImGuiCol.Button, Accent with { W = 0.28f });
+            if (ImGui.SmallButton($" {SortLabels[i]} "))
             {
-                _selectedSortMode = i;
+                _sortModeIdx = i;
                 _config.LastSortMode = (SortMode)i;
                 RebuildGroups();
             }
-            if (selected) ImGui.PopStyleColor();
+            if (sel) ImGui.PopStyleColor();
         }
 
         ImGui.SameLine();
-
-        // Asc/Desc toggle
-        bool asc = _config.SortAscending;
-        if (ImGui.SmallButton(asc ? " ↑ Asc " : " ↓ Desc "))
+        if (ImGui.SmallButton(_config.SortAscending ? " ↑ Asc " : " ↓ Desc "))
         {
             _config.SortAscending = !_config.SortAscending;
             RebuildGroups();
         }
 
-        // Status message
         if (_statusTimer > 0f)
         {
             ImGui.SameLine();
-            ImGui.PushStyleColor(ImGuiCol.Text, ColorGold);
+            ImGui.PushStyleColor(ImGuiCol.Text, Gold);
             ImGui.Text(_statusMessage);
             ImGui.PopStyleColor();
         }
+
+        if (_aiTagger.IsBusy || !string.IsNullOrEmpty(_aiTagger.StatusText))
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.Text($"  {_aiTagger.StatusText}");
+            ImGui.PopStyleColor();
+        }
+    }
+
+    // ── Main Layout ───────────────────────────────────────────────────────────
+
+    private void DrawMainLayout()
+    {
+        var avail = ImGui.GetContentRegionAvail();
+        float leftW = _editingMod != null ? avail.X * 0.56f : avail.X;
+
+        ImGui.BeginChild("##ModList", new Vector2(leftW - (_editingMod != null ? 6 : 0), avail.Y - 30), false);
+        DrawModList();
+        ImGui.EndChild();
+
+        if (_editingMod != null)
+        {
+            ImGui.SameLine();
+            ImGui.BeginChild("##TagEditor", new Vector2(avail.X - leftW - 2, avail.Y - 30), true);
+            DrawTagEditor();
+            ImGui.EndChild();
+        }
+
+        DrawBottomBar();
     }
 
     // ── Mod List ──────────────────────────────────────────────────────────────
 
     private void DrawModList()
     {
-        var filtered = string.IsNullOrWhiteSpace(_searchFilter)
-            ? _groups
-            : _groups.Select(g => new SortGroup
-            {
-                GroupName  = g.GroupName,
-                GroupColor = g.GroupColor,
-                GroupIcon  = g.GroupIcon,
-                Mods       = g.Mods.Where(m =>
-                    m.Name.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
-                    m.AllTags.Any(t => t.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase))
-                ).ToList()
-            }).Where(g => g.Mods.Any()).ToList();
+        var filtered = FilterGroups();
+        int total = filtered.Sum(g => g.Mods.Count);
 
-        int totalMods = filtered.Sum(g => g.Mods.Count);
-        ImGui.PushStyleColor(ImGuiCol.Text, ColorSubtext);
-        ImGui.Text($"  {totalMods} mods  ·  {filtered.Count} groups");
+        ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+        ImGui.Text($"  {total} mods · {filtered.Count} groups");
         ImGui.PopStyleColor();
         ImGui.Spacing();
 
         foreach (var (group, gi) in filtered.Select((g, i) => (g, i)))
         {
-            DrawGroupHeader(group, gi);
+            var bg = HexAlpha(group.GroupColor, 0.14f);
+            ImGui.PushStyleColor(ImGuiCol.Header,        bg);
+            ImGui.PushStyleColor(ImGuiCol.HeaderHovered, HexAlpha(group.GroupColor, 0.25f));
+            ImGui.PushStyleColor(ImGuiCol.HeaderActive,  HexAlpha(group.GroupColor, 0.35f));
+            ImGui.PushStyleColor(ImGuiCol.Text,          HexToVec4(group.GroupColor) with { W = 1f });
 
-            bool collapsed = (_collapsedGroups_flags & (1 << gi)) != 0;
-            if (!collapsed)
-            {
-                foreach (var mod in group.Mods)
-                    DrawModRow(mod);
-            }
+            bool open = ImGui.CollapsingHeader(
+                $"  {group.GroupName}  ({group.Mods.Count})##grp{gi}",
+                ImGuiTreeNodeFlags.DefaultOpen);
+            ImGui.PopStyleColor(4);
 
+            if (!open) continue;
+            foreach (var mod in group.Mods) DrawModRow(mod);
             ImGui.Spacing();
         }
 
@@ -226,89 +266,71 @@ public class PluginUI : IDisposable
         {
             ImGui.Spacing();
             ImGui.SetCursorPosX((ImGui.GetWindowWidth() - 200) / 2);
-            ImGui.PushStyleColor(ImGuiCol.Text, ColorSubtext);
-            ImGui.Text("No mods found. Try refreshing.");
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.Text("No mods found.");
             ImGui.PopStyleColor();
         }
-    }
-
-    private void DrawGroupHeader(SortGroup group, int gi)
-    {
-        bool collapsed = (_collapsedGroups_flags & (1 << gi)) != 0;
-
-        // Parse hex color
-        var col = HexToVec4(group.GroupColor) with { W = 0.18f };
-        ImGui.PushStyleColor(ImGuiCol.Header,        col);
-        ImGui.PushStyleColor(ImGuiCol.HeaderHovered, col with { W = 0.30f });
-        ImGui.PushStyleColor(ImGuiCol.HeaderActive,  col with { W = 0.40f });
-
-        bool open = ImGui.CollapsingHeader(
-            $"  {group.GroupName}  ({group.Mods.Count})",
-            ImGuiTreeNodeFlags.DefaultOpen | (collapsed ? ImGuiTreeNodeFlags.None : 0));
-
-        ImGui.PopStyleColor(3);
-
-        if (!open && !collapsed)  _collapsedGroups_flags |= (1 << gi);
-        if (open  && collapsed)   _collapsedGroups_flags &= ~(1 << gi);
     }
 
     private void DrawModRow(ModEntry mod)
     {
-        bool isEditing = _editingMod == mod;
+        bool isEdit = _editingMod == mod;
+        float rowW  = ImGui.GetContentRegionAvail().X - 12;
 
-        // Row background
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, isEditing
-            ? ColorAccent with { W = 0.10f }
-            : ColorPanel  with { W = 0.40f });
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 10);
+        ImGui.PushStyleColor(ImGuiCol.ChildBg,
+            isEdit ? Accent with { W = 0.10f } : Panel with { W = 0.35f });
+        ImGui.BeginChild($"##mr_{mod.DirectoryName}", new Vector2(rowW, 40), false);
 
-        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 12);
-        float rowW = ImGui.GetContentRegionAvail().X - 12;
-
-        ImGui.BeginChild($"##mod_{mod.DirectoryName}", new Vector2(rowW, 38), false);
-
-        // Mod name
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 5);
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 6);
         ImGui.Text($"  {mod.Name}");
 
+        // AI suggestion indicator
+        if (mod.PendingSuggestion != null)
+        {
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Text, Warning);
+            ImGui.Text("🤖");
+            ImGui.PopStyleColor();
+        }
+
         // Tag chips
-        ImGui.SameLine();
-        float tagsStartX = ImGui.GetCursorPosX();
-        foreach (var tag in mod.AllTags.Take(5))
+        foreach (var tag in mod.AllTags.Take(4))
         {
             ImGui.SameLine();
             DrawTagChip(tag);
         }
-        if (mod.AllTags.Count > 5)
+        if (mod.AllTags.Count > 4)
         {
             ImGui.SameLine();
-            ImGui.PushStyleColor(ImGuiCol.Text, ColorSubtext);
-            ImGui.SmallButton($"+{mod.AllTags.Count - 5}");
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.SmallButton($"+{mod.AllTags.Count - 4}");
+            ImGui.PopStyleColor();
+        }
+        if (!mod.HasAnyTags)
+        {
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.Text("  no tags");
             ImGui.PopStyleColor();
         }
 
-        // Edit button (right-aligned)
-        float btnW = 55;
-        ImGui.SameLine();
-        float pad = rowW - ImGui.GetCursorPosX() - btnW - 8;
-        if (pad > 0) ImGui.SetCursorPosX(ImGui.GetCursorPosX() + pad);
+        // Tag button right-aligned
+        float btnW = 60;
+        float pad  = rowW - ImGui.GetCursorPosX() - btnW - 8;
+        if (pad > 0) { ImGui.SameLine(); ImGui.SetCursorPosX(ImGui.GetCursorPosX() + pad); }
 
-        if (isEditing)
+        if (isEdit)
         {
-            ImGui.PushStyleColor(ImGuiCol.Button, ColorAccent with { W = 0.4f });
-            if (ImGui.SmallButton("  ✓ Done  "))
-            {
-                _tagManager.SaveTags(mod);
-                _editingMod = null;
-                SetStatus($"Tags saved for \"{mod.Name}\"");
-                RebuildGroups();
-            }
+            ImGui.PushStyleColor(ImGuiCol.Button, Accent with { W = 0.4f });
+            if (ImGui.SmallButton(" ✓ Done "))
+            { _tagManager.SaveTags(mod); _editingMod = null; SetStatus("Saved!"); RebuildGroups(); }
             ImGui.PopStyleColor();
         }
         else
         {
-            ImGui.PushStyleColor(ImGuiCol.Button, ColorPanel);
-            if (ImGui.SmallButton(" 🏷 Tag "))
-                _editingMod = mod;
+            ImGui.PushStyleColor(ImGuiCol.Button, Panel);
+            if (ImGui.SmallButton(" 🏷 Tag ")) _editingMod = mod;
             ImGui.PopStyleColor();
         }
 
@@ -317,25 +339,44 @@ public class PluginUI : IDisposable
         ImGui.Spacing();
     }
 
-    // ── Tag Editor (right panel) ──────────────────────────────────────────────
+    // ── Tag Editor ────────────────────────────────────────────────────────────
 
     private void DrawTagEditor()
     {
         if (_editingMod == null) return;
         var mod = _editingMod;
 
-        // Header
-        ImGui.PushStyleColor(ImGuiCol.Text, ColorGold);
-        ImGui.Text($"🏷 Tag Editor");
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+        ImGui.Text("🏷 Tag Editor");
         ImGui.PopStyleColor();
-        ImGui.PushStyleColor(ImGuiCol.Text, ColorSubtext);
+        ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
         ImGui.TextWrapped(mod.Name);
+        if (!string.IsNullOrEmpty(mod.Author)) ImGui.Text($"by {mod.Author}");
         ImGui.PopStyleColor();
 
-        if (!string.IsNullOrEmpty(mod.Author))
+        // Show AI suggestion if pending
+        if (mod.PendingSuggestion != null)
         {
-            ImGui.PushStyleColor(ImGuiCol.Text, ColorSubtext);
-            ImGui.Text($"by {mod.Author}");
+            ImGui.Spacing();
+            ImGui.PushStyleColor(ImGuiCol.ChildBg, Warning with { W = 0.08f });
+            ImGui.BeginChild("##aiSug", new Vector2(ImGui.GetContentRegionAvail().X, 90), true);
+            ImGui.PushStyleColor(ImGuiCol.Text, Warning);
+            ImGui.Text($"🤖 AI Suggestion  ({mod.PendingSuggestion.Confidence * 100:0}% confidence)");
+            ImGui.PopStyleColor();
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.TextWrapped(mod.PendingSuggestion.Reasoning);
+            ImGui.PopStyleColor();
+            ImGui.Spacing();
+            ImGui.PushStyleColor(ImGuiCol.Button, Green with { W = 0.3f });
+            if (ImGui.SmallButton(" ✓ Accept AI Tags "))
+            { _tagManager.ApplyAiSuggestion(mod, mod.PendingSuggestion); SetStatus("AI tags accepted!"); RebuildGroups(); }
+            ImGui.PopStyleColor();
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Button, Red with { W = 0.3f });
+            if (ImGui.SmallButton(" ✕ Dismiss "))
+            { mod.PendingSuggestion = null; _aiTagger.PendingSuggestions.Remove(mod.DirectoryName); }
+            ImGui.PopStyleColor();
+            ImGui.EndChild();
             ImGui.PopStyleColor();
         }
 
@@ -347,92 +388,65 @@ public class PluginUI : IDisposable
         DrawTagSection("🌸 Season",        DefaultTags.Seasons,       mod.SeasonTags);
         ImGui.Spacing();
         DrawTagSection("🎉 Occasion",      DefaultTags.Occasions,     mod.OccasionTags);
+        ImGui.Spacing();
+        DrawTagSection("🐱 Race",          DefaultTags.Races,         mod.RaceTags);
 
         ImGui.Separator();
         ImGui.Spacing();
-
-        // Custom tags
-        ImGui.PushStyleColor(ImGuiCol.Text, ColorGold);
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
         ImGui.Text("⭐ Custom Tags");
         ImGui.PopStyleColor();
-        ImGui.Spacing();
-
         foreach (var ct in mod.CustomTags.ToList())
         {
-            DrawTagChip(ct);
-            ImGui.SameLine();
-            ImGui.PushStyleColor(ImGuiCol.Button, ColorRed with { W = 0.3f });
-            if (ImGui.SmallButton($"×##{ct}"))
-                mod.CustomTags.Remove(ct);
+            DrawTagChip(ct); ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Button, Red with { W = 0.3f });
+            if (ImGui.SmallButton($"×##{ct}")) mod.CustomTags.Remove(ct);
             ImGui.PopStyleColor();
         }
-
         ImGui.Spacing();
         ImGui.SetNextItemWidth(130);
-        ImGui.InputTextWithHint("##NewCustom", "New tag…", ref _newCustomTag, 32);
+        ImGui.InputTextWithHint("##nc", "New tag…", ref _newCustomTag, 32);
         ImGui.SameLine();
-        ImGui.PushStyleColor(ImGuiCol.Button, ColorAccent with { W = 0.3f });
+        ImGui.PushStyleColor(ImGuiCol.Button, Accent with { W = 0.3f });
         if (ImGui.SmallButton("＋ Add") && !string.IsNullOrWhiteSpace(_newCustomTag))
         {
-            if (!mod.CustomTags.Contains(_newCustomTag))
-                mod.CustomTags.Add(_newCustomTag.Trim());
+            if (!mod.CustomTags.Contains(_newCustomTag)) mod.CustomTags.Add(_newCustomTag.Trim());
             _newCustomTag = string.Empty;
         }
         ImGui.PopStyleColor();
 
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-
-        // Save/Clear buttons
-        ImGui.PushStyleColor(ImGuiCol.Button, ColorGold with { W = 0.25f });
+        ImGui.Spacing(); ImGui.Separator(); ImGui.Spacing();
+        ImGui.PushStyleColor(ImGuiCol.Button, Gold with { W = 0.25f });
         if (ImGui.Button("💾 Save Tags", new Vector2(ImGui.GetContentRegionAvail().X, 28)))
-        {
-            _tagManager.SaveTags(mod);
-            _editingMod = null;
-            SetStatus($"Saved!");
-            RebuildGroups();
-        }
+        { _tagManager.SaveTags(mod); _editingMod = null; SetStatus("Saved!"); RebuildGroups(); }
         ImGui.PopStyleColor();
-
         ImGui.Spacing();
-        ImGui.PushStyleColor(ImGuiCol.Button, ColorRed with { W = 0.15f });
+        ImGui.PushStyleColor(ImGuiCol.Button, Red with { W = 0.15f });
         if (ImGui.Button("🗑 Clear All Tags", new Vector2(ImGui.GetContentRegionAvail().X, 22)))
-        {
-            mod.ClothingTags.Clear();
-            mod.SeasonTags.Clear();
-            mod.OccasionTags.Clear();
-            mod.CustomTags.Clear();
-        }
+        { mod.ClothingTags.Clear(); mod.SeasonTags.Clear(); mod.OccasionTags.Clear();
+          mod.RaceTags.Clear(); mod.CustomTags.Clear(); }
         ImGui.PopStyleColor();
     }
 
-    private void DrawTagSection(string header, List<TagCategory> options, List<string> currentTags)
+    private void DrawTagSection(string header, List<TagCategory> options, List<string> current)
     {
-        ImGui.PushStyleColor(ImGuiCol.Text, ColorGold);
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
         ImGui.Text(header);
         ImGui.PopStyleColor();
 
         float avail = ImGui.GetContentRegionAvail().X;
-        float x0 = ImGui.GetCursorPosX();
-        float x = x0;
+        float x0    = ImGui.GetCursorPosX();
+        float x     = x0;
+        bool  first = true;
 
         foreach (var cat in options)
         {
-            bool active = currentTags.Contains(cat.Key);
+            bool active = current.Contains(cat.Key);
+            var  size   = ImGui.CalcTextSize($" {cat.Display} ") + new Vector2(8, 4);
 
-            Vector2 size = ImGui.CalcTextSize($" {cat.Display} ") + new Vector2(8, 4);
-
-            if (x + size.X > x0 + avail - 4)
-            {
-                ImGui.NewLine();
-                x = x0;
-            }
-            else if (x > x0)
-            {
-                ImGui.SameLine();
-            }
-
+            if (x + size.X > x0 + avail - 4) { ImGui.NewLine(); x = x0; first = true; }
+            if (!first) ImGui.SameLine();
+            first = false;
             x += size.X + 4;
 
             if (active)
@@ -443,19 +457,231 @@ public class PluginUI : IDisposable
             }
             else
             {
-                ImGui.PushStyleColor(ImGuiCol.Button,        ColorPanel with { W = 0.60f });
+                ImGui.PushStyleColor(ImGuiCol.Button,        Panel with { W = 0.6f });
                 ImGui.PushStyleColor(ImGuiCol.ButtonHovered, HexToVec4(cat.Color) with { W = 0.20f });
-                ImGui.PushStyleColor(ImGuiCol.Text,          ColorSubtext);
+                ImGui.PushStyleColor(ImGuiCol.Text,          Subtext);
             }
-
-            if (ImGui.SmallButton($" {cat.Display} ##tag_{cat.Key}"))
+            if (ImGui.SmallButton($" {cat.Display} ##t_{cat.Key}"))
             {
-                if (active) currentTags.Remove(cat.Key);
-                else        currentTags.Add(cat.Key);
+                if (active) current.Remove(cat.Key);
+                else        current.Add(cat.Key);
             }
-
             ImGui.PopStyleColor(3);
         }
+    }
+
+    // ── AI Review Panel ───────────────────────────────────────────────────────
+
+    private void DrawAiReviewPanel()
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+        ImGui.Text("🤖 AI Tag Suggestions — Review & Approve");
+        ImGui.PopStyleColor();
+        ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+        ImGui.TextWrapped("AI suggestions are proposals only. They never overwrite your manual tags. Approve individually or use Approve All / Reject All.");
+        ImGui.PopStyleColor();
+        ImGui.Spacing();
+
+        // Bulk actions
+        ImGui.PushStyleColor(ImGuiCol.Button, Green with { W = 0.3f });
+        if (ImGui.Button("✓ Approve All", new Vector2(130, 24)))
+        {
+            foreach (var mod in _allMods.Where(m => m.PendingSuggestion != null))
+                _tagManager.ApplyAiSuggestion(mod, mod.PendingSuggestion!);
+            _aiTagger.PendingSuggestions.Clear();
+            SetStatus("All AI suggestions accepted!");
+            _showAiReview = false;
+            RebuildGroups();
+        }
+        ImGui.PopStyleColor();
+        ImGui.SameLine();
+        ImGui.PushStyleColor(ImGuiCol.Button, Red with { W = 0.3f });
+        if (ImGui.Button("✕ Reject All", new Vector2(130, 24)))
+        {
+            foreach (var mod in _allMods) mod.PendingSuggestion = null;
+            _aiTagger.PendingSuggestions.Clear();
+            _showAiReview = false;
+        }
+        ImGui.PopStyleColor();
+        ImGui.SameLine();
+        ImGui.PushStyleColor(ImGuiCol.Button, Panel);
+        if (ImGui.Button("← Back", new Vector2(80, 24))) _showAiReview = false;
+        ImGui.PopStyleColor();
+
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.BeginChild("##AiList", new Vector2(ImGui.GetContentRegionAvail().X, ImGui.GetContentRegionAvail().Y - 10), false);
+        foreach (var mod in _allMods.Where(m => m.PendingSuggestion != null))
+        {
+            var sug = mod.PendingSuggestion!;
+            ImGui.PushStyleColor(ImGuiCol.ChildBg, Panel with { W = 0.5f });
+            ImGui.BeginChild($"##ai_{mod.DirectoryName}", new Vector2(ImGui.GetContentRegionAvail().X - 4, 80), true);
+
+            ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+            ImGui.Text(mod.Name);
+            ImGui.PopStyleColor();
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.Text($"  {sug.Confidence * 100:0}% confidence — {sug.Reasoning}");
+            ImGui.PopStyleColor();
+
+            // Show proposed tags
+            var allSugTags = sug.ClothingTags.Concat(sug.SeasonTags).Concat(sug.OccasionTags).Concat(sug.RaceTags);
+            foreach (var tag in allSugTags) { DrawTagChip(tag); ImGui.SameLine(); }
+
+            ImGui.NewLine();
+            ImGui.PushStyleColor(ImGuiCol.Button, Green with { W = 0.3f });
+            if (ImGui.SmallButton($" ✓ Accept ##{mod.DirectoryName}"))
+            { _tagManager.ApplyAiSuggestion(mod, sug); _aiTagger.PendingSuggestions.Remove(mod.DirectoryName); RebuildGroups(); }
+            ImGui.PopStyleColor();
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Button, Red with { W = 0.25f });
+            if (ImGui.SmallButton($" ✕ Skip ##{mod.DirectoryName}"))
+            { mod.PendingSuggestion = null; _aiTagger.PendingSuggestions.Remove(mod.DirectoryName); }
+            ImGui.PopStyleColor();
+
+            ImGui.EndChild();
+            ImGui.PopStyleColor();
+            ImGui.Spacing();
+        }
+        ImGui.EndChild();
+    }
+
+    // ── Revert Panel ──────────────────────────────────────────────────────────
+
+    private void DrawRevertPanel()
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+        ImGui.Text("⏪ Revert Penumbra Folders");
+        ImGui.PopStyleColor();
+        ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+        ImGui.TextWrapped("Select a snapshot to restore. Snapshots are taken automatically before every Apply Folders operation.");
+        ImGui.PopStyleColor();
+        ImGui.Spacing();
+
+        ImGui.PushStyleColor(ImGuiCol.Button, Panel);
+        if (ImGui.Button("← Back", new Vector2(80, 24))) _showRevert = false;
+        ImGui.PopStyleColor();
+        ImGui.SameLine();
+        ImGui.PushStyleColor(ImGuiCol.Button, Warning with { W = 0.25f });
+        if (ImGui.Button("Take Snapshot Now", new Vector2(160, 24)))
+        {
+            var snap = _ipc.TakeSnapshot(_allMods, "Manual snapshot");
+            _config.AddSnapshot(snap);
+            SetStatus("Snapshot taken.");
+        }
+        ImGui.PopStyleColor();
+
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        if (!_config.Snapshots.Any())
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.Text("  No snapshots yet. Apply Folders once to create the first snapshot.");
+            ImGui.PopStyleColor();
+            ImGui.End(); PopStyle(); return;
+        }
+
+        ImGui.BeginChild("##SnapList", new Vector2(ImGui.GetContentRegionAvail().X, ImGui.GetContentRegionAvail().Y - 10), false);
+        foreach (var snap in _config.Snapshots)
+        {
+            ImGui.PushStyleColor(ImGuiCol.ChildBg, Panel with { W = 0.5f });
+            ImGui.BeginChild($"##snap_{snap.TakenAt}", new Vector2(ImGui.GetContentRegionAvail().X - 4, 56), true);
+
+            ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+            ImGui.Text(snap.TakenAt);
+            ImGui.PopStyleColor();
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.Text($"  {snap.Description}  ({snap.ModPaths.Count} mods)");
+            ImGui.PopStyleColor();
+
+            ImGui.PushStyleColor(ImGuiCol.Button, Warning with { W = 0.3f });
+            if (ImGui.SmallButton($" ⏪ Revert to This ##{snap.TakenAt}"))
+            {
+                if (!string.IsNullOrEmpty(_collectionName))
+                {
+                    var (s, f, msg) = _ipc.RevertToSnapshot(snap, _collectionName);
+                    SetStatus(msg);
+                    _showRevert = false;
+                    Refresh();
+                }
+                else SetStatus("Set your Collection name in Settings first.");
+            }
+            ImGui.PopStyleColor();
+
+            ImGui.EndChild();
+            ImGui.PopStyleColor();
+            ImGui.Spacing();
+        }
+        ImGui.EndChild();
+    }
+
+    // ── Settings Panel ────────────────────────────────────────────────────────
+
+    private void DrawSettings()
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+        ImGui.Text("⚙ Settings");
+        ImGui.PopStyleColor();
+        ImGui.Spacing();
+
+        ImGui.PushStyleColor(ImGuiCol.Button, Panel);
+        if (ImGui.Button("← Back", new Vector2(80, 24))) _showSettings = false;
+        ImGui.PopStyleColor();
+
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // Collection name
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+        ImGui.Text("Penumbra Collection Name");
+        ImGui.PopStyleColor();
+        ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+        ImGui.TextWrapped("Required for Apply Folders and Revert. Must match exactly the name of your Penumbra collection (e.g. \"Default\" or \"My Collection\").");
+        ImGui.PopStyleColor();
+        ImGui.SetNextItemWidth(280);
+        if (ImGui.InputText("##colname", ref _collectionName, 128))
+            _config.Save();
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // Mod directory override
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+        ImGui.Text("Mod Directory Override");
+        ImGui.PopStyleColor();
+        ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+        ImGui.Text("Leave blank to use Penumbra's detected path.");
+        ImGui.PopStyleColor();
+        var dir = _config.PenumbraModDirectory;
+        ImGui.SetNextItemWidth(400);
+        if (ImGui.InputText("##moddir", ref dir, 512))
+        {
+            _config.PenumbraModDirectory = dir;
+            _config.Save();
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // Live watcher status
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+        ImGui.Text("📡 Live Mod Detection");
+        ImGui.PopStyleColor();
+        ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+        ImGui.TextWrapped("PenumbraSort watches your mod folder for new mods and auto-suggests tags immediately when one is installed.");
+        ImGui.PopStyleColor();
+        ImGui.Spacing();
+        ImGui.PushStyleColor(ImGuiCol.Text, _liveWatcher.IsWatching ? Green : Warning);
+        ImGui.Text(_liveWatcher.IsWatching
+            ? $"● Watching: {_liveWatcher.WatchedPath}"
+            : "● Not watching — Refresh or set mod directory to start.");
+        ImGui.PopStyleColor();
     }
 
     // ── Bottom Bar ────────────────────────────────────────────────────────────
@@ -463,108 +689,135 @@ public class PluginUI : IDisposable
     private void DrawBottomBar()
     {
         ImGui.Separator();
-        ImGui.PushStyleColor(ImGuiCol.Text, ColorSubtext);
-        ImGui.Text($"  {_allMods.Count} total mods");
-        ImGui.SameLine();
-
-        if (_isDirty)
+        ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+        ImGui.Text($"  {_allMods.Count} mods");
+        int untagged = _allMods.Count(m => !m.HasAnyTags);
+        if (untagged > 0)
         {
-            ImGui.PushStyleColor(ImGuiCol.Text, ColorGold);
-            ImGui.Text("  ● Unsaved changes");
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Text, Warning);
+            ImGui.Text($"  · {untagged} untagged");
             ImGui.PopStyleColor();
         }
-
+        int pending = _aiTagger.PendingSuggestions.Count;
+        if (pending > 0)
+        {
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Text, Warning);
+            ImGui.Text($"  · {pending} AI suggestions pending");
+            ImGui.PopStyleColor();
+        }
         ImGui.SetCursorPosX(ImGui.GetWindowWidth() - 250);
-        ImGui.Text("Type /penumbrasort to toggle");
+        ImGui.Text("/penumbrasort to toggle");
         ImGui.PopStyleColor();
-    }
-
-    // ── Tag Chip Helper ───────────────────────────────────────────────────────
-
-    private void DrawTagChip(string tag)
-    {
-        var cat = DefaultTags.ClothingTypes
-            .Concat(DefaultTags.Seasons)
-            .Concat(DefaultTags.Occasions)
-            .FirstOrDefault(c => c.Key == tag);
-
-        var color = cat != null ? HexToVec4(cat.Color) with { W = 0.35f } : ColorPanel;
-
-        ImGui.PushStyleColor(ImGuiCol.Button,        color);
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, color with { W = 0.50f });
-        ImGui.PushStyleColor(ImGuiCol.Text,          Vector4.One);
-        ImGui.SmallButton($" {cat?.Icon ?? "⭐"} {tag} ");
-        ImGui.PopStyleColor(3);
     }
 
     // ── Logic ─────────────────────────────────────────────────────────────────
 
     private void Refresh()
     {
-        _allMods = _ipc.GetMods(_config.PenumbraModDirectory.Length > 0
-            ? _config.PenumbraModDirectory : null);
-
-        if (!_allMods.Any())
-            _allMods = GenerateDemoMods();
-
+        _allMods = _ipc.GetMods(
+            string.IsNullOrEmpty(_config.PenumbraModDirectory) ? null : _config.PenumbraModDirectory);
         _tagManager.ApplyTags(_allMods);
         RebuildGroups();
+
+        // Start/restart live watcher on the mod directory
+        var modDir = _config.PenumbraModDirectory.Length > 0
+            ? _config.PenumbraModDirectory
+            : _ipc.ModDirectory;
+        if (!string.IsNullOrEmpty(modDir))
+            _liveWatcher.Start(modDir);
+
         SetStatus($"Loaded {_allMods.Count} mods.");
     }
 
-    private void RebuildGroups()
+    private void RebuildGroups() =>
+        _groups = _tagManager.GroupMods(_allMods, (SortMode)_sortModeIdx, _config.SortAscending);
+
+    private List<SortGroup> FilterGroups()
     {
-        _groups = _tagManager.GroupMods(_allMods, (SortMode)_selectedSortMode, _config.SortAscending);
+        if (string.IsNullOrWhiteSpace(_searchFilter)) return _groups;
+        return _groups
+            .Select(g => new SortGroup
+            {
+                GroupName    = g.GroupName,
+                GroupColor   = g.GroupColor,
+                GroupIcon    = g.GroupIcon,
+                FolderTarget = g.FolderTarget,
+                Mods         = g.Mods.Where(m =>
+                    m.Name.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
+                    m.AllTags.Any(t => t.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase))
+                ).ToList()
+            })
+            .Where(g => g.Mods.Any()).ToList();
     }
 
-    private void SetStatus(string msg)
+    private void ApplyFolders()
     {
-        _statusMessage = msg;
-        _statusTimer   = 4f;
+        if (string.IsNullOrEmpty(_collectionName))
+        {
+            SetStatus("Set your Collection name in Settings first (⚙).");
+            return;
+        }
+        // Take snapshot before applying
+        var snap = _ipc.TakeSnapshot(_allMods, $"Before apply folders ({DateTime.Now:HH:mm:ss})");
+        _config.AddSnapshot(snap);
+
+        var (s, f, msg) = _ipc.ApplyFolders(_groups, _collectionName);
+        SetStatus(msg);
     }
 
-    /// <summary>Returns sample mods so the UI isn't empty without Penumbra.</summary>
-    private static List<ModEntry> GenerateDemoMods() => new()
+    private void RunAiTagging()
     {
-        new() { Name = "Midnight Lace Dress",       DirectoryName = "midnight_lace",   Author = "LaceWeaver"  },
-        new() { Name = "Summer Bikini Set",          DirectoryName = "summer_bikini",   Author = "BeachBabe"   },
-        new() { Name = "Winter Coat – Velvet",       DirectoryName = "winter_coat_v",   Author = "FashionX"    },
-        new() { Name = "Spring Floral Blouse",       DirectoryName = "spring_blouse",   Author = "PetalCraft"  },
-        new() { Name = "Combat Armor Mark IV",       DirectoryName = "combat_armor_4",  Author = "IronForge"   },
-        new() { Name = "Autumn Harvest Skirt",       DirectoryName = "autumn_skirt",    Author = "LoamStudio"  },
-        new() { Name = "Festival Yukata",            DirectoryName = "festival_yukata", Author = "KyotoMods"   },
-        new() { Name = "Evening Gown – Starlight",   DirectoryName = "eve_gown_star",   Author = "NightDress"  },
-        new() { Name = "Casual Hoodie & Pants",      DirectoryName = "casual_hoodie",   Author = "StreetStyle" },
-        new() { Name = "Leather Boots – Tall",       DirectoryName = "leather_boots_t", Author = "SoleWorks"   },
-        new() { Name = "Crystal Crown",              DirectoryName = "crystal_crown",   Author = "RegalMods"   },
-        new() { Name = "Beach Shorts & Flip Flops",  DirectoryName = "beach_shorts",    Author = "SunFun"      },
-        new() { Name = "Witch Hat & Cape",           DirectoryName = "witch_set",       Author = "HexHatter"   },
-        new() { Name = "Bridal Veil & Dress",        DirectoryName = "bridal_set",      Author = "VowsDesign"  },
-        new() { Name = "Tactical Plate Mail",        DirectoryName = "plate_mail",      Author = "ArmsSmith"   },
-    };
+        _aiCts?.Cancel();
+        _aiCts = new CancellationTokenSource();
+        Task.Run(() => _aiTagger.SuggestTagsAsync(_allMods, string.Empty, _aiCts.Token));
+    }
+
+    /// <summary>
+    /// Called from background thread by LiveWatcher.
+    /// Sets a flag — actual refresh happens on next Draw() call on the main thread.
+    /// </summary>
+    private void OnNewModDetected(string dirName)
+    {
+        _pendingLiveRefresh = true;
+    }
+
+    private void SetStatus(string msg) { _statusMessage = msg; _statusTimer = 5f; }
+
+    // ── Tag chip ──────────────────────────────────────────────────────────────
+
+    private void DrawTagChip(string tag)
+    {
+        var cat = DefaultTags.All.FirstOrDefault(c => c.Key == tag);
+        var col = cat != null ? HexToVec4(cat.Color) with { W = 0.35f } : Panel;
+        ImGui.PushStyleColor(ImGuiCol.Button,        col);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, col with { W = 0.50f });
+        ImGui.PushStyleColor(ImGuiCol.Text,          Vector4.One);
+        ImGui.SmallButton($" {cat?.Icon ?? "⭐"} {tag} ");
+        ImGui.PopStyleColor(3);
+    }
 
     // ── Style ─────────────────────────────────────────────────────────────────
 
     private static void PushStyle()
     {
-        ImGui.PushStyleColor(ImGuiCol.WindowBg,       new Vector4(0.10f, 0.09f, 0.13f, 0.97f));
-        ImGui.PushStyleColor(ImGuiCol.TitleBg,        new Vector4(0.14f, 0.12f, 0.18f, 1.0f));
-        ImGui.PushStyleColor(ImGuiCol.TitleBgActive,  new Vector4(0.20f, 0.17f, 0.28f, 1.0f));
-        ImGui.PushStyleColor(ImGuiCol.MenuBarBg,      new Vector4(0.13f, 0.11f, 0.17f, 1.0f));
-        ImGui.PushStyleColor(ImGuiCol.Separator,      new Vector4(0.35f, 0.30f, 0.45f, 0.60f));
-        ImGui.PushStyleColor(ImGuiCol.ScrollbarBg,    new Vector4(0.08f, 0.07f, 0.10f, 1.0f));
-        ImGui.PushStyleColor(ImGuiCol.ScrollbarGrab,  new Vector4(0.35f, 0.30f, 0.50f, 0.80f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBg,        new Vector4(0.15f, 0.13f, 0.20f, 1.0f));
-        ImGui.PushStyleColor(ImGuiCol.ChildBg,        new Vector4(0.00f, 0.00f, 0.00f, 0.00f));
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding,    6f);
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding,     4f);
-        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing,       new Vector2(6, 4));
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding,     new Vector2(10, 8));
+        ImGui.PushStyleColor(ImGuiCol.WindowBg,      new Vector4(0.10f, 0.09f, 0.13f, 0.97f));
+        ImGui.PushStyleColor(ImGuiCol.TitleBg,       new Vector4(0.14f, 0.12f, 0.18f, 1.0f));
+        ImGui.PushStyleColor(ImGuiCol.TitleBgActive, new Vector4(0.20f, 0.17f, 0.28f, 1.0f));
+        ImGui.PushStyleColor(ImGuiCol.MenuBarBg,     new Vector4(0.13f, 0.11f, 0.17f, 1.0f));
+        ImGui.PushStyleColor(ImGuiCol.Separator,     new Vector4(0.35f, 0.30f, 0.45f, 0.60f));
+        ImGui.PushStyleColor(ImGuiCol.FrameBg,       new Vector4(0.15f, 0.13f, 0.20f, 1.0f));
+        ImGui.PushStyleColor(ImGuiCol.ChildBg,       new Vector4(0.00f, 0.00f, 0.00f, 0.00f));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 6f);
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding,  4f);
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing,    new Vector2(6, 4));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding,  new Vector2(10, 8));
     }
 
     private static void PopStyle()
     {
-        ImGui.PopStyleColor(9);
+        ImGui.PopStyleColor(7);
         ImGui.PopStyleVar(4);
     }
 
@@ -573,11 +826,14 @@ public class PluginUI : IDisposable
         try
         {
             hex = hex.TrimStart('#');
-            float r = Convert.ToInt32(hex[..2], 16) / 255f;
-            float g = Convert.ToInt32(hex[2..4], 16) / 255f;
-            float b = Convert.ToInt32(hex[4..6], 16) / 255f;
-            return new Vector4(r, g, b, 1f);
+            return new Vector4(
+                Convert.ToInt32(hex[..2], 16) / 255f,
+                Convert.ToInt32(hex[2..4], 16) / 255f,
+                Convert.ToInt32(hex[4..6], 16) / 255f, 1f);
         }
         catch { return Vector4.One; }
     }
+
+    private static Vector4 HexAlpha(string hex, float a) =>
+        HexToVec4(hex) with { W = a };
 }
