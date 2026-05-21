@@ -601,14 +601,10 @@ public class PluginUI : IDisposable
             ImGui.PushStyleColor(ImGuiCol.Button, Warning with { W = 0.3f });
             if (ImGui.SmallButton($" ⏪ Revert to This ##{snap.TakenAt}"))
             {
-                if (!string.IsNullOrEmpty(_collectionName))
-                {
-                    var (s, f, msg) = _ipc.RevertToSnapshot(snap, _collectionName);
-                    SetStatus(msg);
-                    _showRevert = false;
-                    Refresh();
-                }
-                else SetStatus("Set your Collection name in Settings first.");
+                var (s, f, msg) = _ipc.RevertToSnapshot(snap);
+                SetStatus(msg);
+                _showRevert = false;
+                Refresh();
             }
             ImGui.PopStyleColor();
 
@@ -632,21 +628,6 @@ public class PluginUI : IDisposable
         if (ImGui.Button("← Back", new Vector2(80, 24))) _showSettings = false;
         ImGui.PopStyleColor();
 
-        ImGui.Separator();
-        ImGui.Spacing();
-
-        // Collection name
-        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
-        ImGui.Text("Penumbra Collection Name");
-        ImGui.PopStyleColor();
-        ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
-        ImGui.TextWrapped("Required for Apply Folders and Revert. Must match exactly the name of your Penumbra collection (e.g. \"Default\" or \"My Collection\").");
-        ImGui.PopStyleColor();
-        ImGui.SetNextItemWidth(280);
-        if (ImGui.InputText("##colname", ref _collectionName, 128))
-            _config.Save();
-
-        ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
@@ -754,16 +735,11 @@ public class PluginUI : IDisposable
 
     private void ApplyFolders()
     {
-        if (string.IsNullOrEmpty(_collectionName))
-        {
-            SetStatus("Set your Collection name in Settings first (⚙).");
-            return;
-        }
         // Take snapshot before applying
         var snap = _ipc.TakeSnapshot(_allMods, $"Before apply folders ({DateTime.Now:HH:mm:ss})");
         _config.AddSnapshot(snap);
 
-        var (s, f, msg) = _ipc.ApplyFolders(_groups, _collectionName);
+        var (s, f, msg) = _ipc.ApplyFolders(_groups);
         SetStatus(msg);
     }
 

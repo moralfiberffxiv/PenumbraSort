@@ -15,8 +15,9 @@ public class PenumbraIpc : IDisposable
 
     private ICallGateSubscriber<string>?                    _getModDirectory;
     private ICallGateSubscriber<IList<(string, string)>>?   _getMods;
-    // Penumbra.SetModPath(string collectionName, string modDir, string newPath)
-    private ICallGateSubscriber<string, string, string, object>? _setModPath;
+    // Penumbra.MoveAbsolutePath(string modDirectoryName, string newSortOrderPath)
+    // newSortOrderPath uses "/" to create virtual folders, e.g. "Tops/Summer/Casual"
+    private ICallGateSubscriber<string, string, int>? _moveAbsolutePath;
 
     public bool    IsAvailable  { get; private set; }
     public string? ModDirectory { get; private set; }
@@ -31,11 +32,10 @@ public class PenumbraIpc : IDisposable
     {
         try
         {
-            _getModDirectory = _pi.GetIpcSubscriber<string>("Penumbra.GetModDirectory");
-            _getMods         = _pi.GetIpcSubscriber<IList<(string, string)>>("Penumbra.GetMods");
-            // SetModPath lets us rename the path prefix, which controls folder display
-            _setModPath      = _pi.GetIpcSubscriber<string, string, string, object>("Penumbra.SetModPath");
-            ModDirectory     = _getModDirectory.InvokeFunc();
+            _getModDirectory   = _pi.GetIpcSubscriber<string>("Penumbra.GetModDirectory");
+            _getMods           = _pi.GetIpcSubscriber<IList<(string, string)>>("Penumbra.GetMods");
+            _moveAbsolutePath  = _pi.GetIpcSubscriber<string, string, int>("Penumbra.MoveAbsolutePath");
+            ModDirectory       = _getModDirectory.InvokeFunc();
             IsAvailable      = true;
         }
         catch
@@ -101,13 +101,11 @@ public class PenumbraIpc : IDisposable
     // ── Apply Sort to Penumbra Folders ────────────────────────────────────────
 
     /// <summary>
-    /// Writes folder assignments to Penumbra via IPC (SetModPath).
+    /// Writes folder assignments to Penumbra via IPC (MoveAbsolutePath).
     /// Falls back to .penumbrasort.json if IPC unavailable.
     /// Returns (successCount, failCount, message).
     /// </summary>
-    public (int success, int fail, string message) ApplyFolders(
-        List<SortGroup> groups,
-        string collectionName = "")
+    public (int success, int fail, string message) ApplyFolders(List<SortGroup> groups)
     {
         var sortData = groups.SelectMany((g, gi) =>
             g.Mods.Select((m, mi) => new
@@ -127,26 +125,32 @@ public class PenumbraIpc : IDisposable
             File.WriteAllText(outFile, JsonConvert.SerializeObject(sortData, Formatting.Indented));
         }
 
-        // Try IPC folder renaming
-        if (!IsAvailable || _setModPath == null)
+        // Try IPC folder renaming via MoveAbsolutePath
+        if (!IsAvailable || _moveAbsolutePath == null)
             return (0, 0, "Sort file saved. Connect Penumbra to apply folders in-game.");
 
         int success = 0, fail = 0;
         foreach (var group in groups)
         {
-            var folderPath = group.FolderTarget; // e.g. "Tops"
             foreach (var mod in group.Mods)
             {
                 try
                 {
-                    // Penumbra SetModPath: collectionName, modDirectory, newPath
-                    // newPath format: "FolderName/ModName" or just "ModName" for no folder
-                    var newPath = string.IsNullOrEmpty(folderPath)
-                        ? mod.Name
-                        : $"{folderPath}/{mod.Name}";
-                    _setModPath.InvokeAction(collectionName, mod.DirectoryName, newPath);
-                    mod.PenumbraFolder = folderPath;
-                    success++;
+                    // MoveAbsolutePath(modDirectoryName, sortOrderPath)
+                    // sortOrderPath = "Clothing/Season/Occasion" — the virtual folder path
+                    // Penumbra uses "/" in sort order to create nested virtual folders
+                    var sortPath = mod.BuildFolderPath();
+                    var result = _moveAbsolutePath.InvokeFunc(mod.DirectoryName, sortPath);
+                    // result is PenumbraApiEc: 0 = Success, 7 = NothingChanged — both are OK
+                    if (result is 0 or 7)
+                    {
+                        mod.PenumbraFolder = sortPath;
+                        success++;
+                    }
+                    else
+                    {
+                        fail++;
+                    }
                 }
                 catch { fail++; }
             }
@@ -163,16 +167,17 @@ public class PenumbraIpc : IDisposable
         PenumbraSnapshot snap,
         string collectionName = "")
     {
-        if (!IsAvailable || _setModPath == null)
-            return (0, 0, "Penumbra not connected — cannot revert folders.");
+        if (!IsAvailable || _moveAbsolutePath == null)
+            return (0, 0, "Penumbra not connected -- cannot revert folders.");
 
         int success = 0, fail = 0;
         foreach (var (dirName, oldPath) in snap.ModPaths)
         {
             try
             {
-                _setModPath.InvokeAction(collectionName, dirName, oldPath);
-                success++;
+                var result = _moveAbsolutePath.InvokeFunc(dirName, oldPath);
+                if (result is 0 or 7) success++;
+                else fail++;
             }
             catch { fail++; }
         }

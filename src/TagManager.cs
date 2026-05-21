@@ -180,8 +180,8 @@ public class TagManager
             SortMode.ClothingType => m => m.ClothingTags.Any() ? m.ClothingTags : new[] { "Untagged" },
             SortMode.Season       => m => m.SeasonTags.Any()   ? m.SeasonTags   : new[] { "Untagged" },
             SortMode.Occasion     => m => m.OccasionTags.Any() ? m.OccasionTags : new[] { "Untagged" },
-            SortMode.Alphabetical => m => new[] { m.Name[..1].ToUpper() },
-            _                     => m => new[] { m.Name[..1].ToUpper() }
+            SortMode.Alphabetical => m => new[] { (m.Name.Length > 0 ? m.Name[..1] : "#").ToUpper() },
+            _                     => m => new[] { (m.Name.Length > 0 ? m.Name[..1] : "#").ToUpper() }
         };
 
         var dict = new Dictionary<string, List<ModEntry>>();
