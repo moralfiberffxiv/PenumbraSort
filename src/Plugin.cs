@@ -2,7 +2,6 @@ using Dalamud.Game.Command;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using System;
-
 namespace PenumbraSort;
 
 public sealed class Plugin : IDalamudPlugin
@@ -11,8 +10,9 @@ public sealed class Plugin : IDalamudPlugin
 
     // Services injected via constructor by Dalamud
     public static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
-    private readonly ICommandManager _commandManager;
-    private readonly IPluginLog      _log;
+    public static IPluginLog Log { get; private set; } = null!;
+    private readonly ICommandManager  _commandManager;
+    private readonly ITextureProvider _textureProvider;
 
     public Configuration Configuration { get; init; }
     private PluginUI    PluginUI    { get; init; }
@@ -21,17 +21,19 @@ public sealed class Plugin : IDalamudPlugin
     public Plugin(
         IDalamudPluginInterface pluginInterface,
         ICommandManager commandManager,
-        IPluginLog log)
+        IPluginLog log,
+        ITextureProvider textureProvider)
     {
         PluginInterface  = pluginInterface;
+        Log              = log;
         _commandManager  = commandManager;
-        _log             = log;
+        _textureProvider = textureProvider;
 
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.Initialize(PluginInterface);
 
-        LiveWatcher = new LiveWatcher(_log);
-        PluginUI    = new PluginUI(Configuration, LiveWatcher);
+        LiveWatcher = new LiveWatcher(Plugin.Log);
+        PluginUI    = new PluginUI(Configuration, LiveWatcher, _textureProvider);
 
         _commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {

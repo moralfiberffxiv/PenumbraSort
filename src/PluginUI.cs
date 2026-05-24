@@ -5,7 +5,10 @@ using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Textures.TextureWraps;
 using Dalamud.Interface.Windowing;
+using Dalamud.Plugin;
+using Dalamud.Plugin.Services;
 
 namespace PenumbraSort;
 
@@ -16,6 +19,7 @@ public class PluginUI : IDisposable
     private readonly TagManager     _tagManager;
     private readonly AiTagger       _aiTagger;
     private readonly LiveWatcher    _liveWatcher;
+    private readonly ModPreviewCache _preview;
 
     private List<ModEntry>  _allMods = new();
     private List<SortGroup> _groups  = new();
@@ -45,13 +49,14 @@ public class PluginUI : IDisposable
 
     public bool Visible { get; set; }
 
-    public PluginUI(Configuration config, LiveWatcher liveWatcher)
+    public PluginUI(Configuration config, LiveWatcher liveWatcher, ITextureProvider texProvider)
     {
         _config      = config;
         _ipc         = new PenumbraIpc(Plugin.PluginInterface);
         _tagManager  = new TagManager(config);
         _aiTagger    = new AiTagger();
         _liveWatcher = liveWatcher;
+        _preview     = new ModPreviewCache(texProvider, Plugin.PluginInterface, config);
 
         // Subscribe to live mod detection — fires from background thread,
         // so we set a flag and handle it on the next Draw() call.
@@ -65,6 +70,7 @@ public class PluginUI : IDisposable
         _liveWatcher.NewModDetected -= OnNewModDetected;
         _aiCts?.Cancel();
         _aiTagger.Dispose();
+        _preview.Dispose();
         _ipc.Dispose();
     }
 
@@ -285,6 +291,10 @@ public class PluginUI : IDisposable
         ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 6);
         ImGui.Text($"  {mod.Name}");
 
+        // Tooltip on hover — check IsItemHovered after the name text
+        if (_config.EnablePreviewTooltip && ImGui.IsItemHovered())
+            DrawModTooltip(mod);
+
         // AI suggestion indicator
         if (mod.PendingSuggestion != null)
         {
@@ -335,8 +345,94 @@ public class PluginUI : IDisposable
         }
 
         ImGui.EndChild();
+
+        // Also check hover on the whole child region for the tooltip
+        if (_config.EnablePreviewTooltip && ImGui.IsItemHovered())
+            DrawModTooltip(mod);
+
         ImGui.PopStyleColor();
         ImGui.Spacing();
+    }
+
+    private void DrawModTooltip(ModEntry mod)
+    {
+        const float TooltipWidth = 280f;
+        const float ImgSize      = 220f;
+
+        ImGui.BeginTooltip();
+        ImGui.PushStyleColor(ImGuiCol.PopupBg, new Vector4(0.10f, 0.09f, 0.14f, 0.97f));
+
+        // ── Header ────────────────────────────────────────────────────────────
+        ImGui.SetNextItemWidth(TooltipWidth);
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+        ImGui.TextWrapped(mod.Name.Length > 0 ? mod.Name : mod.DirectoryName);
+        ImGui.PopStyleColor();
+
+        if (!string.IsNullOrEmpty(mod.Author))
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.Text($"by {mod.Author}");
+            if (!string.IsNullOrEmpty(mod.Version))
+            { ImGui.SameLine(); ImGui.Text($"  v{mod.Version}"); }
+            ImGui.PopStyleColor();
+        }
+
+        ImGui.Separator();
+
+        // ── Description ───────────────────────────────────────────────────────
+        if (!string.IsNullOrEmpty(mod.Description))
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.85f, 0.83f, 0.90f, 1.0f));
+            ImGui.SetNextItemWidth(TooltipWidth);
+            ImGui.TextWrapped(mod.Description.Length > 200
+                ? mod.Description[..200] + "..."
+                : mod.Description);
+            ImGui.PopStyleColor();
+            ImGui.Spacing();
+        }
+
+        // ── Tags ──────────────────────────────────────────────────────────────
+        if (mod.AllTags.Any())
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.TextWrapped(string.Join("  ", mod.AllTags.Select(t => $"• {t}")));
+            ImGui.PopStyleColor();
+            ImGui.Spacing();
+        }
+
+        ImGui.Separator();
+
+        // ── Preview image ─────────────────────────────────────────────────────
+        var wrap   = _preview.GetPreview(mod);
+        var status = _preview.GetStatus(mod);
+
+        if (wrap != null)
+        {
+            // Scale to fit TooltipWidth while preserving aspect ratio
+            var texSize = new Vector2(wrap.Width, wrap.Height);
+            float scale = Math.Min(TooltipWidth / texSize.X, ImgSize / texSize.Y);
+            var dispSize = new Vector2(texSize.X * scale, texSize.Y * scale);
+
+            // Center the image
+            float indent = (TooltipWidth - dispSize.X) / 2f;
+            if (indent > 0) ImGui.SetCursorPosX(ImGui.GetCursorPosX() + indent);
+
+            ImGui.Image(wrap.ImGuiHandle, dispSize);
+
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.Text($"  {status}");
+            ImGui.PopStyleColor();
+        }
+        else
+        {
+            // Placeholder while loading or if not found
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.Text($"🖼 {status}");
+            ImGui.PopStyleColor();
+        }
+
+        ImGui.PopStyleColor(); // PopupBg
+        ImGui.EndTooltip();
     }
 
     // ── Tag Editor ────────────────────────────────────────────────────────────
@@ -631,9 +727,62 @@ public class PluginUI : IDisposable
         ImGui.Separator();
         ImGui.Spacing();
 
-        // Mod directory override
+        // Preview tooltip settings
         ImGui.PushStyleColor(ImGuiCol.Text, Gold);
-        ImGui.Text("Mod Directory Override");
+        ImGui.Text("🖼 Mod Preview Tooltip");
+        ImGui.PopStyleColor();
+        ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+        ImGui.TextWrapped("Shows a popup with mod info and image when you hover over a mod name.");
+        ImGui.PopStyleColor();
+        ImGui.Spacing();
+
+        var enableTooltip = _config.EnablePreviewTooltip;
+        if (ImGui.Checkbox("Enable preview tooltip on hover", ref enableTooltip))
+        {
+            _config.EnablePreviewTooltip = enableTooltip;
+            _config.Save();
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // Web search opt-in
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+        ImGui.Text("🌐 Web Image Search (Fallback)");
+        ImGui.PopStyleColor();
+        ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+        ImGui.TextWrapped("If no local preview or Heliosphere image is found, PenumbraSort can search Bing Images using your mod's display name. This sends network requests containing your mod names to Bing.");
+        ImGui.PopStyleColor();
+        ImGui.Spacing();
+
+        if (!_config.WebSearchPrivacyAcknowledged)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, Warning);
+            ImGui.TextWrapped("Privacy notice: Enabling web search sends mod names to Bing (Microsoft). Images are cached to disk after the first fetch. Mod directory names are never sent.");
+            ImGui.PopStyleColor();
+            ImGui.Spacing();
+            if (ImGui.SmallButton("I understand — enable web search"))
+            {
+                _config.WebSearchPrivacyAcknowledged = true;
+                _config.EnableWebSearch = true;
+                _config.Save();
+                SetStatus("Web search enabled. Images cached to disk after first hover.");
+            }
+        }
+        else
+        {
+            var webSearch = _config.EnableWebSearch;
+            if (ImGui.Checkbox("Enable web image search fallback", ref webSearch))
+            {
+                _config.EnableWebSearch = webSearch;
+                _config.Save();
+            }
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
         ImGui.PopStyleColor();
         ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
         ImGui.Text("Leave blank to use Penumbra's detected path.");

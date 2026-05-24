@@ -190,6 +190,9 @@ public class PenumbraIpc : IDisposable
 
     private static void EnrichFromMeta(ModEntry entry, string modPath)
     {
+        // Always store the mod directory so ModPreviewCache can find local images
+        entry.LocalPreviewPath = modPath;
+
         var metaFile = Path.Combine(modPath, "meta.json");
         if (!File.Exists(metaFile)) return;
         try

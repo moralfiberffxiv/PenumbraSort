@@ -19,6 +19,11 @@ public class Configuration : IPluginConfiguration
     public List<PenumbraSnapshot> Snapshots { get; set; } = new();
     public int MaxSnapshots { get; set; } = 10;
 
+    // Preview settings
+    public bool EnablePreviewTooltip { get; set; } = true;
+    public bool EnableWebSearch      { get; set; } = false; // opt-in only
+    public bool WebSearchPrivacyAcknowledged { get; set; } = false;
+
     // Sort preferences
     public SortMode LastSortMode  { get; set; } = SortMode.ClothingType;
     public bool     SortAscending { get; set; } = true;
