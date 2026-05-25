@@ -417,7 +417,7 @@ public class PluginUI : IDisposable
             float indent = (TooltipWidth - dispSize.X) / 2f;
             if (indent > 0) ImGui.SetCursorPosX(ImGui.GetCursorPosX() + indent);
 
-            ImGui.Image(wrap.ImGuiHandle, dispSize);
+            ImGui.Image(wrap.Handle, dispSize);
 
             ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
             ImGui.Text($"  {status}");

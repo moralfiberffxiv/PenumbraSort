@@ -107,10 +107,13 @@ public class ModEntry
     public string Version       { get; set; } = string.Empty;
     public string Description   { get; set; } = string.Empty;
 
+    // Current Penumbra virtual folder path e.g. "Tops/Summer/Casual"
+    public string PenumbraFolder    { get; set; } = string.Empty;
+
     // Preview image state
-    public string  LocalPreviewPath  { get; set; } = string.Empty; // disk path to preview.png etc
-    public string  HelioUuid         { get; set; } = string.Empty; // Heliosphere mod UUID if present
-    public string  CachedImagePath   { get; set; } = string.Empty; // downloaded web image on disk
+    public string  LocalPreviewPath  { get; set; } = string.Empty;
+    public string  HelioUuid         { get; set; } = string.Empty;
+    public string  CachedImagePath   { get; set; } = string.Empty;
 
 
 
