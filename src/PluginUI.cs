@@ -727,12 +727,12 @@ public class PluginUI : IDisposable
         ImGui.Separator();
         ImGui.Spacing();
 
-        // Preview tooltip settings
+        // ── Preview Tooltip ───────────────────────────────────────────────────
         ImGui.PushStyleColor(ImGuiCol.Text, Gold);
         ImGui.Text("🖼 Mod Preview Tooltip");
         ImGui.PopStyleColor();
         ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
-        ImGui.TextWrapped("Shows a popup with mod info and image when you hover over a mod name.");
+        ImGui.TextWrapped("Shows a popup with mod info and image when hovering over a mod name.");
         ImGui.PopStyleColor();
         ImGui.Spacing();
 
@@ -747,27 +747,27 @@ public class PluginUI : IDisposable
         ImGui.Separator();
         ImGui.Spacing();
 
-        // Web search opt-in
+        // ── Web Search Opt-in ─────────────────────────────────────────────────
         ImGui.PushStyleColor(ImGuiCol.Text, Gold);
         ImGui.Text("🌐 Web Image Search (Fallback)");
         ImGui.PopStyleColor();
         ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
-        ImGui.TextWrapped("If no local preview or Heliosphere image is found, PenumbraSort can search Bing Images using your mod's display name. This sends network requests containing your mod names to Bing.");
+        ImGui.TextWrapped("If no local preview or Heliosphere image is found, PenumbraSort can search Bing Images using your mod's display name.");
         ImGui.PopStyleColor();
         ImGui.Spacing();
 
         if (!_config.WebSearchPrivacyAcknowledged)
         {
             ImGui.PushStyleColor(ImGuiCol.Text, Warning);
-            ImGui.TextWrapped("Privacy notice: Enabling web search sends mod names to Bing (Microsoft). Images are cached to disk after the first fetch. Mod directory names are never sent.");
+            ImGui.TextWrapped("Privacy notice: Enabling web search sends mod display names to Bing (Microsoft). Images are cached to disk after the first fetch. Directory names are never sent.");
             ImGui.PopStyleColor();
             ImGui.Spacing();
             if (ImGui.SmallButton("I understand — enable web search"))
             {
                 _config.WebSearchPrivacyAcknowledged = true;
-                _config.EnableWebSearch = true;
+                _config.EnableWebSearch              = true;
                 _config.Save();
-                SetStatus("Web search enabled. Images cached to disk after first hover.");
+                SetStatus("Web search enabled. Images cached after first hover.");
             }
         }
         else
@@ -783,10 +783,15 @@ public class PluginUI : IDisposable
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
+
+        // ── Mod Directory Override ────────────────────────────────────────────
+        ImGui.PushStyleColor(ImGuiCol.Text, Gold);
+        ImGui.Text("📁 Mod Directory Override");
         ImGui.PopStyleColor();
         ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
         ImGui.Text("Leave blank to use Penumbra's detected path.");
         ImGui.PopStyleColor();
+
         var dir = _config.PenumbraModDirectory;
         ImGui.SetNextItemWidth(400);
         if (ImGui.InputText("##moddir", ref dir, 512))
@@ -799,18 +804,19 @@ public class PluginUI : IDisposable
         ImGui.Separator();
         ImGui.Spacing();
 
-        // Live watcher status
+        // ── Live Watcher Status ───────────────────────────────────────────────
         ImGui.PushStyleColor(ImGuiCol.Text, Gold);
         ImGui.Text("📡 Live Mod Detection");
         ImGui.PopStyleColor();
         ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
-        ImGui.TextWrapped("PenumbraSort watches your mod folder for new mods and auto-suggests tags immediately when one is installed.");
+        ImGui.TextWrapped("Watches your mod folder and auto-suggests tags when a new mod is installed.");
         ImGui.PopStyleColor();
         ImGui.Spacing();
+
         ImGui.PushStyleColor(ImGuiCol.Text, _liveWatcher.IsWatching ? Green : Warning);
         ImGui.Text(_liveWatcher.IsWatching
             ? $"● Watching: {_liveWatcher.WatchedPath}"
-            : "● Not watching — Refresh or set mod directory to start.");
+            : "● Not watching — Refresh or set mod directory above to start.");
         ImGui.PopStyleColor();
     }
 
