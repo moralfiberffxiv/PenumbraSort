@@ -403,17 +403,15 @@ public class PluginUI : IDisposable
         ImGui.Separator();
 
         // ── Preview image ─────────────────────────────────────────────────────
-        var wrap   = _preview.GetPreview(mod);
-        var status = _preview.GetStatus(mod);
+        var wrap = _preview.GetPreview(mod);
+        var (stage, status) = _preview.GetLoadState(mod);
 
         if (wrap != null)
         {
-            // Scale to fit TooltipWidth while preserving aspect ratio
-            var texSize = new Vector2(wrap.Width, wrap.Height);
-            float scale = Math.Min(TooltipWidth / texSize.X, ImgSize / texSize.Y);
+            var texSize  = new Vector2(wrap.Width, wrap.Height);
+            float scale  = Math.Min(TooltipWidth / texSize.X, ImgSize / texSize.Y);
             var dispSize = new Vector2(texSize.X * scale, texSize.Y * scale);
 
-            // Center the image
             float indent = (TooltipWidth - dispSize.X) / 2f;
             if (indent > 0) ImGui.SetCursorPosX(ImGui.GetCursorPosX() + indent);
 
@@ -423,11 +421,27 @@ public class PluginUI : IDisposable
             ImGui.Text($"  {status}");
             ImGui.PopStyleColor();
         }
+        else if (stage is ModPreviewCache.LoadStage.CheckingLocal
+                       or ModPreviewCache.LoadStage.CheckingHeliosphere
+                       or ModPreviewCache.LoadStage.SearchingWeb
+                       or ModPreviewCache.LoadStage.Idle)
+        {
+            // Animated progress bar while actively loading
+            ImGui.PushStyleColor(ImGuiCol.PlotHistogram, Accent with { W = 0.7f });
+            ImGui.PushStyleColor(ImGuiCol.FrameBg,       Panel);
+            float t = (float)(ImGui.GetTime() % 2.0) / 2.0f; // 0→1 over 2s, loops
+            ImGui.ProgressBar(-t, new Vector2(TooltipWidth, 6), "");
+            ImGui.PopStyleColor(2);
+            ImGui.Spacing();
+            ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
+            ImGui.Text($"  {status}");
+            ImGui.PopStyleColor();
+        }
         else
         {
-            // Placeholder while loading or if not found
+            // Failed or not found
             ImGui.PushStyleColor(ImGuiCol.Text, Subtext);
-            ImGui.Text($"🖼 {status}");
+            ImGui.Text($"  {status}");
             ImGui.PopStyleColor();
         }
 

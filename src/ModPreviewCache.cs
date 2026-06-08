@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Dalamud.Interface.Textures.TextureWraps;
@@ -12,74 +13,101 @@ using Dalamud.Plugin.Services;
 namespace PenumbraSort;
 
 /// <summary>
-/// Resolves and caches preview images for mods via a three-tier pipeline:
-///   Tier 1 — Local file   : preview.png / preview.jpg / thumb.png in the mod folder
-///   Tier 2 — Heliosphere  : parse heliosphere.toml UUID → official CDN thumbnail
-///   Tier 3 — Web search   : Bing Image Search using the mod's display name (opt-in)
+/// Resolves and caches preview images via a three-tier pipeline:
+///   Tier 1 — Local file   : preview.png / thumb.png etc. in the mod folder
+///   Tier 2 — Heliosphere  : heliosphere.toml UUID → CDN thumbnail
+///   Tier 3 — Web search   : DuckDuckGo image search by mod display name (opt-in)
 ///
-/// Images are downloaded once and cached to disk under the plugin config directory.
-/// ITextureProvider handles GPU upload and frame-lifetime management.
+/// Key design decisions:
+/// - States are invalidated when web search is toggled on, so newly-enabled
+///   search actually runs on mods that previously returned "no preview found".
+/// - LoadStage enum drives a progress indicator in the tooltip.
+/// - All network IO is async and fires from a background thread; GPU upload
+///   is delegated to ITextureProvider so the game thread is never blocked.
 /// </summary>
 public class ModPreviewCache : IDisposable
 {
-    // ── Constants ────────────────────────────────────────────────────────────
+    // ── Constants ─────────────────────────────────────────────────────────────
 
     private static readonly string[] LocalPreviewNames =
     {
         "preview.png", "preview.jpg", "preview.jpeg", "preview.webp",
         "thumb.png",   "thumb.jpg",   "cover.png",    "cover.jpg",
+        "screenshot.png", "screenshot.jpg",
     };
 
-    private const string HelioTomlFile    = "heliosphere.toml";
-    private const string HelioApiBase     = "https://heliosphere.app/api/v1/mods/";
-    private const string BingSearchUrl    = "https://www.bing.com/images/search?q={0}+FFXIV+mod&form=HDRSC2&first=1";
-    private const int    TooltipImageSize = 220; // pixels, square
+    private const string HelioTomlFile = "heliosphere.toml";
+    private const string HelioApiBase  = "https://heliosphere.app/api/v1/mods/";
 
-    // ── State ─────────────────────────────────────────────────────────────────
+    // ── Load stage — drives progress display in tooltip ───────────────────────
+
+    public enum LoadStage
+    {
+        Idle,
+        CheckingLocal,
+        CheckingHeliosphere,
+        SearchingWeb,
+        Done,
+        Failed,
+    }
+
+    // ── State ──────────────────────────────────────────────────────────────────
 
     private readonly ITextureProvider _texProvider;
-    private readonly string            _cacheDir;
-    private readonly Configuration     _config;
-    private readonly HttpClient        _http;
+    private readonly string           _cacheDir;
+    private readonly Configuration    _config;
+    private readonly HttpClient       _http;
 
-    // DirectoryName → current load state
-    private readonly Dictionary<string, PreviewState> _states = new();
+    private readonly Dictionary<string, PreviewState> _states   = new();
     private readonly HashSet<string>                  _inflight = new();
+
+    // Track whether web search was enabled on last resolution attempt.
+    // If it changes, stale "no preview" states must be invalidated.
+    private bool _lastWebSearchEnabled;
 
     public ModPreviewCache(
         ITextureProvider texProvider,
         IDalamudPluginInterface pi,
         Configuration config)
     {
-        _texProvider = texProvider;
-        _config      = config;
-        _cacheDir    = Path.Combine(pi.GetPluginConfigDirectory(), "PreviewCache");
+        _texProvider            = texProvider;
+        _config                 = config;
+        _cacheDir               = Path.Combine(pi.GetPluginConfigDirectory(), "PreviewCache");
+        _lastWebSearchEnabled   = config.EnableWebSearch;
         Directory.CreateDirectory(_cacheDir);
 
         _http = new HttpClient();
         _http.DefaultRequestHeaders.Add("User-Agent",
-            "PenumbraSort/1.0 (Dalamud plugin; mod preview cache)");
-        _http.Timeout = TimeSpan.FromSeconds(10);
+            "Mozilla/5.0 (compatible; PenumbraSort/1.0; mod preview fetcher)");
+        _http.Timeout = TimeSpan.FromSeconds(12);
     }
 
-    // ── Public API ────────────────────────────────────────────────────────────
+    // ── Public API ─────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns the current preview wrap for a mod (may be null while loading).
-    /// Kicks off async resolution if not yet started.
-    /// Safe to call every frame — idempotent.
+    /// Returns current texture wrap (null while loading or if not found).
+    /// Kicks off async resolution on first call. Idempotent per mod.
+    /// Also detects when web search is freshly enabled and re-runs failed states.
     /// </summary>
     public IDalamudTextureWrap? GetPreview(ModEntry mod)
     {
+        // If web search was just enabled, invalidate mods stuck at "no preview" so they retry
+        bool webSearchNowEnabled = _config.EnableWebSearch && _config.WebSearchPrivacyAcknowledged;
+        if (webSearchNowEnabled && !_lastWebSearchEnabled)
+        {
+            _lastWebSearchEnabled = true;
+            InvalidateFailedStates();
+        }
+        else if (!webSearchNowEnabled)
+        {
+            _lastWebSearchEnabled = false;
+        }
+
         var key = mod.DirectoryName;
 
         if (_states.TryGetValue(key, out var state))
-        {
-            // Return whatever we have — may be null if still loading or failed
             return state.Wrap;
-        }
 
-        // Not started — kick off async resolution (fire and forget)
         if (!_inflight.Contains(key))
         {
             _inflight.Add(key);
@@ -89,14 +117,22 @@ public class ModPreviewCache : IDisposable
         return null;
     }
 
-    /// <summary>Returns the load status string for display in the tooltip.</summary>
-    public string GetStatus(ModEntry mod)
+    /// <summary>Returns (stage, statusText) for tooltip progress display.</summary>
+    public (LoadStage Stage, string Status) GetLoadState(ModEntry mod)
     {
-        if (!_states.TryGetValue(mod.DirectoryName, out var s)) return "Loading...";
-        return s.Status;
+        if (_inflight.Contains(mod.DirectoryName))
+        {
+            if (_states.TryGetValue(mod.DirectoryName, out var s))
+                return (s.Stage, s.Status);
+            return (LoadStage.Idle, "Starting...");
+        }
+
+        if (_states.TryGetValue(mod.DirectoryName, out var state))
+            return (state.Stage, state.Status);
+
+        return (LoadStage.Idle, "Waiting...");
     }
 
-    /// <summary>Clears cached state for a single mod (forces re-fetch on next hover).</summary>
     public void Invalidate(string dirName)
     {
         if (_states.TryGetValue(dirName, out var s))
@@ -107,16 +143,26 @@ public class ModPreviewCache : IDisposable
         _inflight.Remove(dirName);
     }
 
-    // ── Resolution pipeline ───────────────────────────────────────────────────
+    /// <summary>Clears all failed/no-preview states so they re-resolve on next hover.</summary>
+    public void InvalidateFailedStates()
+    {
+        var toRemove = new List<string>();
+        foreach (var (key, state) in _states)
+            if (state.Wrap == null && state.Stage == LoadStage.Failed)
+                toRemove.Add(key);
+        foreach (var key in toRemove)
+            _states.Remove(key);
+    }
+
+    // ── Resolution pipeline ────────────────────────────────────────────────────
 
     private async Task ResolveAsync(ModEntry mod, CancellationToken ct)
     {
         var key = mod.DirectoryName;
-        SetState(key, null, "Searching...");
-
         try
         {
             // ── Tier 1: Local file ────────────────────────────────────────────
+            SetState(key, null, LoadStage.CheckingLocal, "Checking local preview...");
             var local = FindLocalPreview(mod);
             if (local != null)
             {
@@ -124,12 +170,13 @@ public class ModPreviewCache : IDisposable
                 if (wrap != null)
                 {
                     mod.LocalPreviewPath = local;
-                    SetState(key, wrap, "Local preview");
+                    SetState(key, wrap, LoadStage.Done, "Local preview");
                     return;
                 }
             }
 
             // ── Tier 2: Heliosphere UUID ──────────────────────────────────────
+            SetState(key, null, LoadStage.CheckingHeliosphere, "Checking Heliosphere...");
             var uuid = FindHelioUuid(mod);
             if (uuid != null)
             {
@@ -137,7 +184,7 @@ public class ModPreviewCache : IDisposable
                 var wrap = await LoadFromHelioAsync(uuid, key, ct);
                 if (wrap != null)
                 {
-                    SetState(key, wrap, "Heliosphere");
+                    SetState(key, wrap, LoadStage.Done, "Heliosphere");
                     return;
                 }
             }
@@ -145,31 +192,32 @@ public class ModPreviewCache : IDisposable
             // ── Tier 3: Web search (opt-in) ───────────────────────────────────
             if (_config.EnableWebSearch && _config.WebSearchPrivacyAcknowledged)
             {
-                // Use the cached disk image if we already fetched it before
-                if (!string.IsNullOrEmpty(mod.CachedImagePath) &&
-                    File.Exists(mod.CachedImagePath))
+                // Use cached result if it exists on disk
+                var cached = GetDiskCachedPath(mod);
+                if (cached != null)
                 {
-                    var cached = await LoadFromFileAsync(mod.CachedImagePath, key, ct);
-                    if (cached != null)
+                    var wrap = await LoadFromFileAsync(cached, key, ct);
+                    if (wrap != null)
                     {
-                        SetState(key, cached, "Web search (cached)");
+                        SetState(key, wrap, LoadStage.Done, "Web search (cached)");
                         return;
                     }
                 }
 
+                SetState(key, null, LoadStage.SearchingWeb, $"Searching web for \"{mod.Name}\"...");
                 var webWrap = await LoadFromWebSearchAsync(mod, key, ct);
                 if (webWrap != null)
                 {
-                    SetState(key, webWrap, "Web search");
+                    SetState(key, webWrap, LoadStage.Done, "Web search");
                     return;
                 }
             }
 
-            // No image found — set empty state so we stop trying
-            SetState(key, null,
+            // Nothing found
+            SetState(key, null, LoadStage.Failed,
                 _config.EnableWebSearch
                     ? "No preview found"
-                    : "No local preview (enable web search in Settings)");
+                    : "No local preview  (enable web search in Settings)");
         }
         catch (OperationCanceledException)
         {
@@ -177,8 +225,9 @@ public class ModPreviewCache : IDisposable
         }
         catch (Exception ex)
         {
-            Plugin.Log.Warning($"[PreviewCache] Failed to load preview for {mod.Name}: {ex.Message}");
-            SetState(key, null, $"Load error: {ex.Message[..Math.Min(50, ex.Message.Length)]}");
+            Plugin.Log.Warning($"[PreviewCache] {mod.Name}: {ex.Message}");
+            SetState(key, null, LoadStage.Failed,
+                $"Error: {ex.Message[..Math.Min(60, ex.Message.Length)]}");
         }
         finally
         {
@@ -186,17 +235,14 @@ public class ModPreviewCache : IDisposable
         }
     }
 
-    // ── Tier 1: Local file ────────────────────────────────────────────────────
+    // ── Tier 1: Local file ─────────────────────────────────────────────────────
 
     private static string? FindLocalPreview(ModEntry mod)
     {
-        if (string.IsNullOrEmpty(mod.LocalPreviewPath)) return null;
-        var dir = Path.GetDirectoryName(mod.LocalPreviewPath) ?? mod.LocalPreviewPath;
-
-        // mod.LocalPreviewPath is set to the mod's directory by PenumbraIpc.EnrichFromMeta
-        // Check if it's actually a directory
-        if (Directory.Exists(mod.LocalPreviewPath))
-            dir = mod.LocalPreviewPath;
+        var dir = mod.LocalPreviewPath;
+        if (string.IsNullOrEmpty(dir)) return null;
+        if (!Directory.Exists(dir)) dir = Path.GetDirectoryName(dir);
+        if (dir == null || !Directory.Exists(dir)) return null;
 
         foreach (var name in LocalPreviewNames)
         {
@@ -217,45 +263,36 @@ public class ModPreviewCache : IDisposable
         }
         catch (Exception ex)
         {
-            Plugin.Log.Debug($"[PreviewCache] Local load failed ({path}): {ex.Message}");
+            Plugin.Log.Debug($"[PreviewCache] File load failed ({Path.GetFileName(path)}): {ex.Message}");
             return null;
         }
     }
 
-    // ── Tier 2: Heliosphere UUID ──────────────────────────────────────────────
+    // ── Tier 2: Heliosphere ────────────────────────────────────────────────────
 
     private static string? FindHelioUuid(ModEntry mod)
     {
-        // mod.LocalPreviewPath holds the mod directory path set by PenumbraIpc
-        if (string.IsNullOrEmpty(mod.LocalPreviewPath)) return null;
-
-        var dir = Directory.Exists(mod.LocalPreviewPath)
-            ? mod.LocalPreviewPath
-            : Path.GetDirectoryName(mod.LocalPreviewPath);
-
+        var dir = mod.LocalPreviewPath;
+        if (string.IsNullOrEmpty(dir)) return null;
+        if (!Directory.Exists(dir)) dir = Path.GetDirectoryName(dir);
         if (dir == null) return null;
+
         var toml = Path.Combine(dir, HelioTomlFile);
         if (!File.Exists(toml)) return null;
 
         try
         {
-            // heliosphere.toml is a simple TOML file; parse uuid line without a full TOML lib
             foreach (var line in File.ReadAllLines(toml))
             {
-                var trimmed = line.Trim();
-                if (trimmed.StartsWith("id", StringComparison.OrdinalIgnoreCase) &&
-                    trimmed.Contains('='))
+                var t = line.Trim();
+                if (t.StartsWith("id", StringComparison.OrdinalIgnoreCase) && t.Contains('='))
                 {
-                    var parts = trimmed.Split('=', 2);
-                    if (parts.Length == 2)
-                    {
-                        var uuid = parts[1].Trim().Trim('"', '\'', ' ');
-                        if (Guid.TryParse(uuid, out _)) return uuid;
-                    }
+                    var val = t.Split('=', 2)[1].Trim().Trim('"', '\'', ' ');
+                    if (Guid.TryParse(val, out _)) return val;
                 }
             }
         }
-        catch { /* ignore malformed toml */ }
+        catch { }
 
         return null;
     }
@@ -263,70 +300,93 @@ public class ModPreviewCache : IDisposable
     private async Task<IDalamudTextureWrap?> LoadFromHelioAsync(
         string uuid, string debugKey, CancellationToken ct)
     {
-        // Check disk cache first
         var cachePath = Path.Combine(_cacheDir, $"helio_{uuid}.jpg");
         if (File.Exists(cachePath))
             return await LoadFromFileAsync(cachePath, debugKey, ct);
 
         try
         {
-            // Heliosphere API: GET /api/v1/mods/{uuid} → JSON with images array
-            var url      = $"{HelioApiBase}{uuid}";
-            var json     = await _http.GetStringAsync(url, ct);
-            var doc      = JsonDocument.Parse(json);
+            var json    = await _http.GetStringAsync($"{HelioApiBase}{uuid}", ct);
+            var doc     = JsonDocument.Parse(json);
+            string? url = null;
 
-            // Navigate: $.images[0].url or $.cover_image_url depending on API version
-            string? imgUrl = null;
-            if (doc.RootElement.TryGetProperty("images", out var images) &&
-                images.GetArrayLength() > 0)
-            {
-                imgUrl = images[0].TryGetProperty("url", out var u) ? u.GetString() : null;
-            }
+            if (doc.RootElement.TryGetProperty("images", out var imgs) && imgs.GetArrayLength() > 0)
+                url = imgs[0].TryGetProperty("url", out var u) ? u.GetString() : null;
             else if (doc.RootElement.TryGetProperty("cover_image_url", out var cover))
-            {
-                imgUrl = cover.GetString();
-            }
+                url = cover.GetString();
+            else if (doc.RootElement.TryGetProperty("thumbnail_url", out var thumb))
+                url = thumb.GetString();
 
-            if (imgUrl == null) return null;
+            if (url == null) return null;
 
-            var imgBytes = await _http.GetByteArrayAsync(imgUrl, ct);
-            await File.WriteAllBytesAsync(cachePath, imgBytes, ct);
-
-            return await _texProvider.CreateFromImageAsync(
-                new ReadOnlyMemory<byte>(imgBytes), debugKey, ct);
+            var bytes = await _http.GetByteArrayAsync(url, ct);
+            await File.WriteAllBytesAsync(cachePath, bytes, ct);
+            return await _texProvider.CreateFromImageAsync(new ReadOnlyMemory<byte>(bytes), debugKey, ct);
         }
         catch (Exception ex)
         {
-            Plugin.Log.Debug($"[PreviewCache] Heliosphere fetch failed ({uuid}): {ex.Message}");
+            Plugin.Log.Debug($"[PreviewCache] Heliosphere failed ({uuid}): {ex.Message}");
             return null;
         }
     }
 
-    // ── Tier 3: Web search ────────────────────────────────────────────────────
+    // ── Tier 3: Web search (DuckDuckGo) ───────────────────────────────────────
+
+    private string? GetDiskCachedPath(ModEntry mod)
+    {
+        var path = Path.Combine(_cacheDir, $"web_{SanitizePath(mod.Name)}.jpg");
+        return File.Exists(path) ? path : null;
+    }
 
     private async Task<IDalamudTextureWrap?> LoadFromWebSearchAsync(
         ModEntry mod, string debugKey, CancellationToken ct)
     {
-        // Uses mod display NAME (not directory name) to reduce privacy exposure
-        var query    = Uri.EscapeDataString($"{mod.Name} FFXIV mod glamour");
-        var searchUrl = $"https://www.bing.com/images/search?q={query}&form=HDRSC2&first=1";
-
-        var cachePath = Path.Combine(_cacheDir,
-            $"web_{SanitizeForPath(mod.Name)}.jpg");
+        var cachePath = Path.Combine(_cacheDir, $"web_{SanitizePath(mod.Name)}.jpg");
 
         try
         {
-            // Fetch the search results HTML and extract first image URL
-            var html = await _http.GetStringAsync(searchUrl, ct);
-            var imgUrl = ExtractFirstBingImageUrl(html);
-            if (imgUrl == null) return null;
+            // DuckDuckGo image search — more reliable HTML structure than Bing
+            // Query uses display name + "FFXIV mod" to bias toward mod screenshots
+            var query     = Uri.EscapeDataString($"{mod.Name} FFXIV mod");
+            var searchUrl = $"https://duckduckgo.com/?q={query}&iax=images&ia=images";
 
-            var imgBytes = await _http.GetByteArrayAsync(imgUrl, ct);
-            await File.WriteAllBytesAsync(cachePath, imgBytes, ct);
+            // DDG requires a cookie/token from the main page first
+            var tokenHtml = await _http.GetStringAsync("https://duckduckgo.com/", ct);
+            var token     = ExtractDdgToken(tokenHtml);
+
+            string? imgUrl;
+            if (token != null)
+            {
+                // Use the DDG image API endpoint
+                var apiUrl  = $"https://duckduckgo.com/i.js?q={query}&o=json&p=1&vqd={token}&f=,,,,,&l=us-en";
+                var apiJson = await _http.GetStringAsync(apiUrl, ct);
+                imgUrl      = ExtractFirstDdgImageUrl(apiJson);
+            }
+            else
+            {
+                // Fallback: scrape the search page HTML for og:image or first img src
+                var html = await _http.GetStringAsync(searchUrl, ct);
+                imgUrl   = ExtractFirstImageFromHtml(html);
+            }
+
+            if (imgUrl == null)
+            {
+                Plugin.Log.Debug($"[PreviewCache] Web search returned no image URL for: {mod.Name}");
+                return null;
+            }
+
+            var bytes = await _http.GetByteArrayAsync(imgUrl, ct);
+            if (bytes.Length < 1024)
+            {
+                // Too small — likely a placeholder/error image, not a real result
+                Plugin.Log.Debug($"[PreviewCache] Web search image too small ({bytes.Length} bytes), skipping");
+                return null;
+            }
+
+            await File.WriteAllBytesAsync(cachePath, bytes, ct);
             mod.CachedImagePath = cachePath;
 
-            return await _texProvider.CreateFromImageAsync(
-                new ReadOnlyMemory<byte>(imgBytes), debugKey, ct);
+            return await _texProvider.CreateFromImageAsync(new ReadOnlyMemory<byte>(bytes), debugKey, ct);
         }
         catch (Exception ex)
         {
@@ -335,48 +395,65 @@ public class ModPreviewCache : IDisposable
         }
     }
 
-    /// <summary>Extracts the first murl (media URL) from Bing image search HTML.</summary>
-    private static string? ExtractFirstBingImageUrl(string html)
+    private static string? ExtractDdgToken(string html)
     {
-        // Bing embeds image URLs as: "murl":"https://..."
-        const string marker = "\"murl\":\"";
-        var idx = html.IndexOf(marker, StringComparison.Ordinal);
-        if (idx < 0) return null;
-
-        idx += marker.Length;
-        var end = html.IndexOf('"', idx);
-        if (end < 0) return null;
-
-        var url = html[idx..end].Replace("\\u0026", "&");
-        return Uri.IsWellFormedUriString(url, UriKind.Absolute) ? url : null;
+        // DDG embeds vqd token as: vqd="<token>" or vqd='<token>'
+        var m = Regex.Match(html, @"vqd[=\s]+['""]([^'""]+)['""]");
+        return m.Success ? m.Groups[1].Value : null;
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    private static string? ExtractFirstDdgImageUrl(string json)
+    {
+        try
+        {
+            var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("results", out var results) &&
+                results.GetArrayLength() > 0)
+            {
+                // Prefer "image" over "thumbnail" — better quality
+                var first = results[0];
+                if (first.TryGetProperty("image", out var img)) return img.GetString();
+                if (first.TryGetProperty("thumbnail", out var thumb)) return thumb.GetString();
+            }
+        }
+        catch { }
+        return null;
+    }
 
-    private void SetState(string key, IDalamudTextureWrap? wrap, string status)
+    private static string? ExtractFirstImageFromHtml(string html)
+    {
+        // Try og:image meta tag first
+        var og = Regex.Match(html, @"<meta[^>]+property=['""]og:image['""][^>]+content=['""]([^'""]+)['""]");
+        if (og.Success) return og.Groups[1].Value;
+
+        // Try first img src that looks like a real URL
+        var img = Regex.Match(html, @"<img[^>]+src=['""]?(https://[^'"">\s]+\.(jpg|jpeg|png|webp))['""]?");
+        if (img.Success) return img.Groups[1].Value;
+
+        return null;
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private void SetState(string key, IDalamudTextureWrap? wrap, LoadStage stage, string status)
     {
         if (_states.TryGetValue(key, out var old) && old.Wrap != wrap)
             old.Wrap?.Dispose();
-
-        _states[key] = new PreviewState(wrap, status);
+        _states[key] = new PreviewState(wrap, stage, status);
     }
 
-    private static string SanitizeForPath(string name)
+    private static string SanitizePath(string name)
     {
-        foreach (var c in Path.GetInvalidFileNameChars())
-            name = name.Replace(c, '_');
+        foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
         return name.Length > 60 ? name[..60] : name;
     }
 
-    // ── IDisposable ───────────────────────────────────────────────────────────
-
     public void Dispose()
     {
-        foreach (var state in _states.Values)
-            state.Wrap?.Dispose();
+        foreach (var s in _states.Values) s.Wrap?.Dispose();
         _states.Clear();
         _http.Dispose();
     }
 
-    private record PreviewState(IDalamudTextureWrap? Wrap, string Status);
+    private record PreviewState(IDalamudTextureWrap? Wrap, LoadStage Stage, string Status);
 }
